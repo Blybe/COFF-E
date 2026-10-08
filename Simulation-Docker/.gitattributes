@@ -1,0 +1,4 @@
+# Keep shell scripts with LF endings so they keep working inside Linux
+# containers, even when the repository is checked out on Windows.
+* text=auto
+*.sh text eol=lf

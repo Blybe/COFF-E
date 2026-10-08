@@ -1,0 +1,169 @@
+# =============================================================================
+# COFF-E simulation stack
+# =============================================================================
+# Simulates both hardware components of the COFF-E project in Docker:
+#
+#   avular-origin-sim   Avular Origin One mobile platform
+#                       (ROS 2 Humble + Gazebo Fortress, built from
+#                       avular-origin/, Gazebo GUI streamed to the browser
+#                       via noVNC)  ->  http://localhost:6080
+#
+#   origin-nav          Nav2 path planning + RViz for the Origin One
+#                       (same image)  ->  http://localhost:6081
+#
+#   ufactory-studio     UFACTORY Studio + simulated xArm 6
+#                       (official UFACTORY Docker image, see
+#                       docs.ufactory.cc: "How to install UFACTORY Studio
+#                       in Docker")  ->  http://localhost:18333
+#
+# Quick start:   docker compose up -d --build
+# Stop:          docker compose down
+# Logs:          docker compose logs -f <service>
+# =============================================================================
+
+name: coffe-simulation
+
+services:
+  # ---------------------------------------------------------------------------
+  # 1) Avular Origin One (mobile base) - Gazebo Fortress simulation
+  # ---------------------------------------------------------------------------
+  avular-origin-sim:
+    build:
+      context: ./avular-origin
+    image: coffe/avular-origin-sim:humble
+    container_name: avular-origin-sim
+    shm_size: "1gb"
+    environment:
+      # Map selection (set in .env). CEREBRA_MAP = name or id of a map in
+      # ../cerebra-data/maps; the robot spawns at waypoint CEREBRA_SPAWN.
+      # The world is generated from the Cerebra data at every start.
+      # With CEREBRA_MAP empty, SIM_WORLD + ROBOT_POSE_* are used instead
+      # (Avular's own worlds, e.g. TY_test_area.world).
+      CEREBRA_MAP: "${CEREBRA_MAP:-}"
+      CEREBRA_SPAWN: "${CEREBRA_SPAWN:-Home}"
+      SIM_WORLD: "${SIM_WORLD:-TY_test_area.world}"
+      ROBOT_POSE_X: "${ROBOT_POSE_X:--18.75}"
+      ROBOT_POSE_Y: "${ROBOT_POSE_Y:--34.8}"
+      ROBOT_POSE_YAW: "${ROBOT_POSE_YAW:-1.57}"
+      USE_CMD_VEL_CONTROLLER: "True"           # True = prioritises control
+                                               # inputs like the real robot
+      DRIVE_CONFIGURATION: "skid_steer_drive"  # alternative: mecanum_drive
+      HEADLESS: "false"                        # true = sim only, no GUI/VNC
+      # To show the Gazebo GUI on the host desktop instead of the browser
+      # (WSLg on Windows 11, or a normal Linux X11 session), uncomment the
+      # next two lines and run `docker compose up` from inside WSL/Linux:
+      #USE_HOST_DISPLAY: "1"
+      #DISPLAY: ":0"
+    ports:
+      # Gazebo GUI in the browser (bound to localhost only; the VNC inside
+      # the container has no password)
+      - "127.0.0.1:6080:6080"
+    volumes:
+      # WSLg mount, only used when USE_HOST_DISPLAY=1 is enabled above
+      - /mnt/wslg:/mnt/wslg
+      # Shared Cerebra Studio data (see tools/sync_cerebra.ps1) + importer
+      - ../cerebra-data:/cerebra:ro
+      - ./tools:/coffe/tools:ro
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        if [ -n "$$CEREBRA_MAP" ]; then
+          GEN=/home/origin_ws/install/origin_one_gazebo/share/origin_one_gazebo/worlds/cerebra
+          python3 /coffe/tools/cerebra_import.py --data /cerebra --map "$$CEREBRA_MAP" \
+            --spawn "$$CEREBRA_SPAWN" --mode sim --out "$$GEN"
+          set -a; . "$$GEN/selected.env"; set +a
+        fi
+        exec ros2 launch origin_one_gazebo origin_sim_common.launch.py \
+          world:="$$SIM_WORLD" \
+          robot_pose_x:="$$ROBOT_POSE_X" robot_pose_y:="$$ROBOT_POSE_Y" \
+          robot_pose_yaw:="$$ROBOT_POSE_YAW" \
+          use_cmd_vel_controller:="$$USE_CMD_VEL_CONTROLLER" \
+          drive_configuration:="$$DRIVE_CONFIGURATION" headless:="$$HEADLESS"
+    networks:
+      coffe-net:
+        ipv4_address: 192.168.100.10
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # 1b) Path planning for the Origin One: Nav2 + RViz (same image)
+  # ---------------------------------------------------------------------------
+  # Loads the same Cerebra map as the simulation (CEREBRA_MAP), localises
+  # with AMCL from the spawn waypoint and drives the simulated robot via
+  # /robot/cmd_vel. Cerebra waypoints, paths and zones are shown in RViz;
+  # no_go_area zones are keep-out areas for the planner.
+  # RViz (with the Nav2 panel) runs in the browser:
+  #   http://localhost:6081/vnc.html?autoconnect=true&resize=scale
+  # Send goals with "Nav2 Goal" in RViz or: docker exec -it origin-nav goto Home
+  origin-nav:
+    image: coffe/avular-origin-sim:humble
+    container_name: origin-nav
+    depends_on:
+      - avular-origin-sim
+    shm_size: "512mb"
+    environment:
+      CEREBRA_MAP: "${CEREBRA_MAP:-}"
+      CEREBRA_SPAWN: "${CEREBRA_SPAWN:-Home}"
+      CEREBRA_SCENE: "/tmp/cerebra/scene.json"
+      NOVNC_PORT: "6081"
+    ports:
+      - "127.0.0.1:6081:6081"
+    volumes:
+      - ../cerebra-data:/cerebra:ro
+      - ./tools:/coffe/tools:ro
+      - ./nav:/nav:ro
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        if [ -n "$$CEREBRA_MAP" ]; then
+          python3 /coffe/tools/cerebra_import.py --data /cerebra --map "$$CEREBRA_MAP" \
+            --spawn "$$CEREBRA_SPAWN" --mode nav --out /tmp/cerebra
+          set -a; . /tmp/cerebra/selected.env; set +a
+        fi
+        exec ros2 launch /nav/origin_nav.launch.py
+    networks:
+      coffe-net:
+        ipv4_address: 192.168.100.11
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # 2) UFACTORY xArm 6 (robot arm) - UFACTORY Studio simulation
+  # ---------------------------------------------------------------------------
+  ufactory-studio:
+    image: danielwang123321/uf-ubuntu-docker
+    container_name: uf_software
+    stdin_open: true
+    tty: true
+    environment:
+      # Robot type passed to xarm_start.sh:
+      #   "5 5" = xArm 5, "6 6" = xArm 6, "7 7" = xArm 7,
+      #   "6 9" = Lite 6, "6 12" = xArm 850
+      XARM_CONFIG: "6 6"
+    command: >
+      bash -c "/xarm_scripts/xarm_start.sh $${XARM_CONFIG};
+      sleep infinity"
+    ports:
+      # UFACTORY Studio web UI + xArm SDK API (bound to localhost only)
+      - "127.0.0.1:18333:18333"
+      # Modbus TCP / status report ports
+      - "127.0.0.1:502:502"
+      - "127.0.0.1:503:503"
+      - "127.0.0.1:504:504"
+      - "127.0.0.1:30000:30000"
+      - "127.0.0.1:30001:30001"
+      - "127.0.0.1:30002:30002"
+      - "127.0.0.1:30003:30003"
+    networks:
+      coffe-net:
+        # Fixed address, like a real xArm control box on the lab network.
+        ipv4_address: 192.168.100.200
+    restart: unless-stopped
+
+networks:
+  coffe-net:
+    ipam:
+      config:
+        - subnet: 192.168.100.0/24

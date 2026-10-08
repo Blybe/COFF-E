@@ -1,0 +1,100 @@
+# =============================================================================
+# Nav2 parameter overrides for the simulated Avular Origin One
+# =============================================================================
+# origin_nav.launch.py merges this file on top of the stock Nav2 defaults
+# (/opt/ros/humble/share/nav2_bringup/params/nav2_params.yaml), so only the
+# values that differ from the TurtleBot3 defaults are listed here. Lists
+# replace the default list; nested mappings are merged key by key.
+#
+# Edit and restart the nav service to try other settings:
+#   docker compose restart origin-nav
+# =============================================================================
+
+amcl:
+  ros__parameters:
+    base_frame_id: "base_link"
+    laser_max_range: 30.0
+    laser_min_range: 0.45
+    # Initial pose is filled in by the launch file from ROBOT_POSE_X/Y/YAW
+    set_initial_pose: true
+
+bt_navigator:
+  ros__parameters:
+    odom_topic: /robot/odom
+
+controller_server:
+  ros__parameters:
+    # DWB slows to a crawl in the RotateToGoal zone at the end of a route.
+    # The stock 10 s no-progress budget then aborts short routes before the
+    # goal checker can fire (the sim also runs at ~0.5x real time), so the
+    # robot parks inside the goal tolerance and still fails. 30 s gives the
+    # final approach room to finish; a truly stuck robot still aborts.
+    progress_checker:
+      movement_time_allowance: 30.0
+    FollowPath:
+      max_vel_x: 0.5
+      max_speed_xy: 0.5
+      max_vel_theta: 1.0
+      acc_lim_x: 1.0
+      decel_lim_x: -1.0
+      acc_lim_theta: 2.0
+      decel_lim_theta: -2.0
+      sim_time: 2.0
+
+# Origin One: 0.65 m body, 0.45 m wheel track + 0.12 m wide tyres.
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      width: 5
+      height: 5
+      footprint: "[[0.33, 0.28], [0.33, -0.28], [-0.33, -0.28], [-0.33, 0.28]]"
+      inflation_layer:
+        inflation_radius: 0.6
+      voxel_layer:
+        scan:
+          raytrace_max_range: 6.0
+          obstacle_max_range: 5.0
+          obstacle_min_range: 0.45
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      footprint: "[[0.33, 0.28], [0.33, -0.28], [-0.33, -0.28], [-0.33, 0.28]]"
+      inflation_layer:
+        inflation_radius: 0.6
+      obstacle_layer:
+        scan:
+          raytrace_max_range: 6.0
+          obstacle_max_range: 5.0
+          obstacle_min_range: 0.45
+
+planner_server:
+  ros__parameters:
+    GridBased:
+      plugin: "nav2_navfn_planner/NavfnPlanner"
+      use_astar: true
+      allow_unknown: false
+
+velocity_smoother:
+  ros__parameters:
+    max_velocity: [0.5, 0.0, 1.0]
+    min_velocity: [-0.3, 0.0, -1.0]
+    max_accel: [1.0, 0.0, 2.0]
+    max_decel: [-1.0, 0.0, -2.0]
+
+# 3D Ouster lidar (/robot/lidar/points) -> 2D /scan for AMCL and costmaps.
+# Heights are relative to base_link (ground level); range_min hides hits on
+# the robot's own body.
+pointcloud_to_laserscan:
+  ros__parameters:
+    target_frame: base_link
+    transform_tolerance: 0.05
+    min_height: 0.05
+    max_height: 1.5
+    angle_min: -3.14159
+    angle_max: 3.14159
+    angle_increment: 0.00614
+    scan_time: 0.2
+    range_min: 0.45
+    range_max: 30.0
+    use_inf: true
