@@ -162,6 +162,61 @@ services:
         ipv4_address: 192.168.100.200
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # 3) COFF-E orchestrator - mission sequencer + dashboard (see orchestrator/)
+  # ---------------------------------------------------------------------------
+  # Runs the mission steps on BOTH simulations and checks every step:
+  #   drive 60 s -> CHECK the odometry moved
+  #   arm to 90 deg -> CHECK the joint angle
+  #   drive further -> only because the previous step passed; the mission
+  #   stops with FAILED as soon as a check fails.
+  # Talks ROS 2 to the Origin One sim (/robot/cmd_vel, /robot/odom, /clock,
+  # Nav2 goals) and the xArm SDK to the simulated arm (192.168.100.200).
+  # Dashboard: http://localhost:8080 - mission files: orchestrator/missions
+  coffe-orchestrator:
+    build:
+      context: ./orchestrator
+    image: coffe/orchestrator:humble
+    container_name: coffe-orchestrator
+    depends_on:
+      - avular-origin-sim
+      - ufactory-studio
+    environment:
+      XARM_HOST: "${XARM_HOST:-192.168.100.200}"
+      CEREBRA_MAP: "${CEREBRA_MAP:-}"
+      CEREBRA_SPAWN: "${CEREBRA_SPAWN:-Home}"
+      CEREBRA_SCENE: "/tmp/cerebra/scene.json"
+      MISSIONS_DIR: "/missions"
+      DASHBOARD_PORT: "8080"
+    ports:
+      # Mission dashboard (bound to localhost only)
+      - "127.0.0.1:8080:8080"
+    volumes:
+      # Cerebra data -> the same scene.json (waypoints) as origin-nav uses,
+      # so goto waypoints work with the same names
+      - ../cerebra-data:/cerebra:ro
+      - ./tools:/coffe/tools:ro
+      # Mission files and dashboard are mounted, so they can be edited
+      # without rebuilding the image: new/changed missions appear in the
+      # dashboard dropdown within a second (no container restart needed)
+      - ./orchestrator/missions:/missions:ro
+      - ./orchestrator/dashboard:/app/dashboard:ro
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        source /opt/ros/humble/setup.bash
+        if [ -n "$$CEREBRA_MAP" ]; then
+          python3 /coffe/tools/cerebra_import.py --data /cerebra --map "$$CEREBRA_MAP" \
+            --spawn "$$CEREBRA_SPAWN" --mode nav --out /tmp/cerebra
+        fi
+        exec python3 /app/server.py
+    networks:
+      coffe-net:
+        ipv4_address: 192.168.100.12
+    restart: unless-stopped
+
 networks:
   coffe-net:
     ipam:

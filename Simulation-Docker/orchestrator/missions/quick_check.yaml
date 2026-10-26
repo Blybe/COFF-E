@@ -1,0 +1,34 @@
+# Quick check (~1 min): does the whole chain work?
+#   robot drives and the odometry check passes  ->  arm moves and the angle
+#   check passes  ->  robot drives back.
+# Use this first; coffee_demo.yaml is the same flow at full size.
+
+name: "Quick check: robot + arm end to end"
+clock: sim
+
+steps:
+  - name: "Drive forward for 8 s"
+    type: drive
+    duration: 8
+    linear: 0.3
+    check:
+      min_distance: 0.5
+
+  - name: "Arm: joint 1 to 20 degrees"
+    type: arm_joint
+    joint: 1
+    angle_deg: 20
+    speed: 40
+
+  - name: "Arm: joint 1 back to 0"
+    type: arm_joint
+    joint: 1
+    angle_deg: 0
+    speed: 40
+
+  - name: "Drive backwards for 8 s (back to the start)"
+    type: drive
+    duration: 8
+    linear: -0.3
+    check:
+      min_distance: 0.5

@@ -9,8 +9,16 @@ tested before the real hardware is available:
 | **Nav2 + RViz** (path planning) | Navigation 2 stack on the Cerebra map (same image, second container) | RViz in the browser: <http://localhost:6081> |
 | **UFACTORY xArm 6** (robot arm) | UFACTORY Studio + simulated xArm 6 firmware (official UFACTORY Docker image) | UFACTORY Studio web UI: <http://localhost:18333> |
 
+| **COFF-E orchestrator** (mission dashboard) | Runs checked missions on both sims: drive → arm → drive, stopping on the first failed check | Dashboard: <http://localhost:8080> |
+
 Everything runs from one `docker compose up -d --build`, on Windows, macOS or
 Linux. Nothing ROS-related needs to be installed on the host.
+
+**New here?** Follow [MISSION_GUIDE.md](MISSION_GUIDE.md): a step-by-step
+guide to ROS 2 on the Origin One, the xArm SDK, and running missions such as
+"drive 60 s → arm 90° → drive further" from the dashboard. Mission files live
+in `orchestrator/missions/`, and the orchestrator unit tests run with
+`py -m unittest tests/test_orchestrator.py`.
 
 ## Folder contents
 

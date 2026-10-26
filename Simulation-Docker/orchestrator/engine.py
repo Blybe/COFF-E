@@ -1,0 +1,411 @@
+﻿"""COFF-E orchestrator: the mission sequencer.
+
+Runs the steps of a mission one by one on the robot (Origin One, ROS 2) and
+the arm (xArm 6, SDK), checks every step, and keeps a live status for the
+dashboard:
+
+    1. drive forward for 60 s   -> PASS (odometry moved >= min_distance)
+    2. arm joint 1 to 90 deg    -> PASS (joint angle within tolerance)
+    3. drive further            -> only started because step 2 passed
+    ... any FAIL stops the mission, later steps are skipped.
+
+The sequencer only talks to the two small interfaces below (robot + arm), so
+the whole state machine, including the checks and the stop-on-failure
+behaviour, is unit tested with fakes - no Docker, ROS or hardware needed.
+
+Robot interface (see ros_robot.py for the real one, tests for the fake):
+    wall_now()                  wall-clock seconds
+    sim_seconds(), sim_fresh()  Gazebo /clock time, if the sim publishes it
+    odom()                      {"x", "y", "yaw", "speed", "fresh"}
+    publish_cmd(linear, ang)    publish one Twist on /robot/cmd_vel
+    stop()                      publish zero velocity (safety)
+    nav_ready()                 True if the Nav2 action server is reachable
+    nav_send(x, y, yaw)         goal handle wrapper for NavigateToPose
+    nav_status(handle)          (state, distance_remaining_m); state is one
+                                of active/succeeded/failed/cancelled/rejected
+    nav_cancel(handle)          cancel a running Nav2 goal
+    waypoint(name)              (x, y, yaw) of a Cerebra waypoint, or None
+
+Arm interface (see arm_control.py):
+    angles()                    list of 6 joint angles in degrees, or None
+    command_joints(angles, speed)  start a joint move, 0 = accepted
+"""
+
+import collections
+import math
+import threading
+import time
+
+IDLE = "idle"
+RUNNING = "running"
+PASSED = "passed"
+FAILED = "failed"
+ABORTED = "aborted"
+
+# Status values of a single step.
+PENDING = "pending"
+STEP_RUNNING = "running"
+STEP_PASSED = "passed"
+STEP_FAILED = "failed"
+SKIPPED = "skipped"
+STEP_ABORTED = "aborted"
+
+
+class StepAborted(Exception):
+    """Raised inside a step when the user pressed Abort."""
+
+
+class MissionEngine:
+    """Runs one mission at a time; thread-safe; start()/abort()/snapshot()."""
+
+    def __init__(self, robot, arm, sleep=time.sleep, log_size=400):
+        self.robot = robot
+        self.arm = arm
+        self._sleep = sleep  # injectable for unit tests
+        self._lock = threading.RLock()
+        self._log = collections.deque(maxlen=log_size)
+        self._abort = threading.Event()
+        self._thread = None
+        self._state = IDLE
+        self._mission = None      # normalized mission dict or None
+        self._mission_file = ""
+        self._steps = []         # per-step status dicts (for the dashboard)
+        self._started_wall = 0.0
+        self._ended_wall = 0.0
+        self._reason = ""
+
+    # ------------------------------------------------------------- control
+
+    def start(self, mission, mission_file=""):
+        """Start a mission in the background. Raises RuntimeError if busy,
+        so the server can answer with a clear error message."""
+        with self._lock:
+            if self._state == RUNNING:
+                raise RuntimeError("a mission is already running")
+            self._mission = mission
+            self._mission_file = mission_file
+            self._steps = [self._blank_step(step) for step in mission["steps"]]
+            self._reason = ""
+            self._abort.clear()
+            self._state = RUNNING
+            self._started_wall = self.robot.wall_now()
+            self._ended_wall = 0.0
+            self._say(f"mission start: {mission['name']} ({len(mission['steps'])} steps, "
+                      f"clock: {mission['clock']})")
+            self._thread = threading.Thread(target=self._run, daemon=True)
+            self._thread.start()
+
+    def run_blocking(self, mission, mission_file=""):
+        """Run a mission in the calling thread (used by the unit tests)."""
+        with self._lock:
+            if self._state == RUNNING:
+                raise RuntimeError("a mission is already running")
+            self._mission = mission
+            self._mission_file = mission_file
+            self._steps = [self._blank_step(step) for step in mission["steps"]]
+            self._reason = ""
+            self._abort.clear()
+            self._state = RUNNING
+            self._started_wall = self.robot.wall_now()
+            self._ended_wall = 0.0
+            self._say(f"mission start: {mission['name']} ({len(mission['steps'])} steps, "
+                      f"clock: {mission['clock']})")
+        self._run()
+        return self._state
+
+    def abort(self):
+        """Ask the running mission to stop at the next check."""
+        self._abort.set()
+
+    # ------------------------------------------------------------- status
+
+    def snapshot(self):
+        with self._lock:
+            elapsed = 0.0
+            if self._started_wall:
+                elapsed = (self._ended_wall or self.robot.wall_now()) - self._started_wall
+            return {
+                "state": self._state,
+                "reason": self._reason,
+                "mission_name": self._mission["name"] if self._mission else None,
+                "mission_file": self._mission_file,
+                "clock": self._mission["clock"] if self._mission else None,
+                "started_wall": self._started_wall,
+                "elapsed_s": elapsed,
+                "steps": [dict(s) for s in self._steps],
+                "log": list(self._log),
+            }
+
+    # ------------------------------------------------------------- helpers
+
+    def _say(self, text, level="info"):
+        stamp = time.strftime("%H:%M:%S")
+        with self._lock:
+            self._log.append({"t": stamp, "level": level, "text": text})
+
+    @staticmethod
+    def _blank_step(step):
+        return {
+            "name": step["name"],
+            "type": step["type"],
+            "status": PENDING,
+            "detail": "",
+            "progress": 0.0,
+            "duration_s": None,
+            "started_wall": 0.0,
+            "ended_wall": 0.0,
+            "targets": None,  # arm steps: the 6 target angles
+        }
+
+    def _now(self):
+        """Mission clock: Gazebo time when selected and fresh, else wall."""
+        if self._mission["clock"] == "sim" and self.robot.sim_fresh():
+            return self.robot.sim_seconds()
+        return self.robot.wall_now()
+
+    def _set_step(self, index, **fields):
+        with self._lock:
+            self._steps[index].update(fields)
+
+    def _progress(self, index, done, total):
+        self._set_step(index, progress=max(0.0, min(1.0, done / total if total else 1.0)))
+
+    def _pump(self, index, deadline, abort_nav=None):
+        """Sleep a bit while checking abort and timeout. Returns True when
+        the step should keep going. Raises StepAborted on abort. Does not
+        touch the step progress: each step computes its own."""
+        if self._abort.is_set():
+            if abort_nav is not None:
+                self.robot.nav_cancel(abort_nav)
+            raise StepAborted("aborted by the user")
+        if self.robot.wall_now() > deadline:
+            if abort_nav is not None:
+                self.robot.nav_cancel(abort_nav)
+            return False
+        self._sleep(0.1)
+        return True
+
+    # ------------------------------------------------------------- runner
+
+    def _run(self):
+        mission = self._mission
+        try:
+            for i, step in enumerate(mission["steps"]):
+                if self._abort.is_set():
+                    self._skip_rest(i, "aborted")
+                    self._state = ABORTED
+                    self._reason = "mission aborted by the user"
+                    break
+                self._set_step(i, status=STEP_RUNNING, started_wall=self.robot.wall_now())
+                self._say(f"step {i + 1}/{len(mission['steps'])} start: {step['name']}")
+                ok, detail, duration = self._run_step(i, step)
+                ended = self.robot.wall_now()
+                if isinstance(ok, StepAborted):
+                    self._set_step(i, status=STEP_ABORTED, detail=str(ok.args[0]),
+                                   ended_wall=ended, duration_s=ended - duration)
+                    self._skip_rest(i + 1, "aborted")
+                    self._state = ABORTED
+                    self._reason = f"aborted during step {i + 1} ({step['name']})"
+                    break
+                self._set_step(i, status=STEP_PASSED if ok else STEP_FAILED,
+                               detail=detail, ended_wall=ended, duration_s=ended - duration)
+                if ok:
+                    self._say(f"step {i + 1}/{len(mission['steps'])} PASS: {detail}", "pass")
+                    continue
+                self._skip_rest(i + 1, "skipped after failure")
+                self._state = FAILED
+                self._reason = f'step {i + 1} ("{step["name"]}") failed: {detail}'
+                self._say(self._reason, "fail")
+                break
+            else:
+                self._state = PASSED
+                self._say(f"mission PASSED: {mission['name']}", "pass")
+        except Exception as exc:  # never let the worker thread die silently
+            self._state = FAILED
+            self._reason = f"internal error: {exc}"
+            self._say(self._reason, "fail")
+        finally:
+            self._ended_wall = self.robot.wall_now()
+            self.robot.stop()  # safety: stop driving no matter what happened
+            self._say(f"mission {self._state} after "
+                      f"{self._ended_wall - self._started_wall:.0f} s (wall clock)",
+                      "pass" if self._state == PASSED else "fail")
+
+    def _skip_rest(self, from_index, status):
+        for j in range(from_index, len(self._steps)):
+            self._set_step(j, status=SKIPPED if status == "skipped after failure" else status,
+                           detail="not started")
+
+    def _run_step(self, i, step):
+        """Runs one step, returns (ok|StepAborted, detail, started_wall)."""
+        started = self.robot.wall_now()
+        deadline = self._deadline(step)
+        step["_budget"] = deadline - started  # for the "timed out" messages
+        runner = {
+            "drive": self._step_drive,
+            "wait": self._step_wait,
+            "goto": self._step_goto,
+            "arm_joint": self._step_arm,
+            "arm_home": self._step_arm,
+        }[step["type"]]
+        try:
+            ok, detail = runner(i, step, deadline)
+            return ok, detail, started
+        except StepAborted as exc:
+            return exc, str(exc.args[0]), started
+
+    def _deadline(self, step):
+        """Wall-clock deadline for a step. An explicit timeout from the
+        mission wins; timed steps (drive/wait) otherwise get one that adapts
+        to the measured simulation speed, so a mission keeps working when the
+        sim runs at 0.5x, 0.2x or 0.1x real time."""
+        now = self.robot.wall_now()
+        if step.get("timeout") is not None:
+            return now + step["timeout"]
+        if step["type"] in ("drive", "wait"):
+            factor = getattr(self.robot, "time_factor", lambda: 1.0)() or 0.0
+            factor = min(max(factor, 0.05), 1.0)  # sane bounds
+            return now + step["duration"] / factor * 1.5 + 60.0
+        return now + (240 if step["type"].startswith("arm") else 900)
+
+    # ------------------------------------------------------------- steps
+
+    def _step_drive(self, i, step, deadline):
+        """Publish cmd_vel for <duration> mission-clock seconds, then check
+        the odometry displacement against check.min_distance."""
+        duration = step["duration"]
+        start = self.robot.odom()
+        if not start["fresh"]:
+            # Give the sim a moment to publish /robot/odom before starting.
+            while not start["fresh"] and self.robot.wall_now() < deadline:
+                self._pump(i, deadline)
+                start = self.robot.odom()
+            if not start["fresh"]:
+                return False, "no odometry on /robot/odom - is avular-origin-sim running?"
+
+        t0 = self._now()
+        while True:
+            self.robot.publish_cmd(step["linear"], step["angular"])
+            elapsed = self._now() - t0
+            odom = self.robot.odom()
+            dist = math.hypot(odom["x"] - start["x"], odom["y"] - start["y"])
+            self._set_step(i, duration_s=elapsed,
+                           detail=f"{elapsed:.0f}/{duration:.0f} s | {dist:.2f} m driven")
+            self._progress(i, elapsed, duration)
+            if elapsed >= duration:
+                break
+            if not self._pump(i, deadline):
+                return False, (f"timed out after {step['_budget']:.0f} s "
+                               f"(odometry last moved {dist:.2f} m)")
+        # Always stop driving again, like letting go of the joystick.
+        self._stop_cmd()
+        return self._check_distance(start, step)
+
+    def _check_distance(self, start, step):
+        odom = self.robot.odom()
+        dist = math.hypot(odom["x"] - start["x"], odom["y"] - start["y"])
+        need = step["min_distance"]
+        if not odom["fresh"]:
+            return False, "no odometry on /robot/odom - cannot verify the robot moved"
+        if need is None:
+            return True, f"moved {dist:.2f} m"
+        if dist < need:
+            return False, f"only moved {dist:.2f} m, need {need} m (blocked or too slow?)"
+        return True, f"moved {dist:.2f} m (>= {need} m)"
+
+    def _stop_cmd(self):
+        for _ in range(5):  # a few zero messages, 10 Hz for half a second
+            self.robot.publish_cmd(0.0, 0.0)
+            self._sleep(0.1)
+
+    def _step_wait(self, i, step, deadline):
+        t0 = self._now()
+        while True:
+            left = step["duration"] - (self._now() - t0)
+            self._set_step(i, duration_s=self._now() - t0, detail=f"{left:.0f} s left")
+            self._progress(i, self._now() - t0, step["duration"])
+            if left <= 0:
+                return True, f"waited {step['duration']:.0f} s"
+            if not self._pump(i, deadline):
+                return False, f"timed out after {step['_budget']:.0f} s"
+
+    def _step_goto(self, i, step, deadline):
+        """Navigate to a Cerebra waypoint or map coordinate with Nav2."""
+        if step["waypoint"]:
+            wp = self.robot.waypoint(step["waypoint"])
+            if wp is None:
+                return False, f'waypoint "{step["waypoint"]}" not found; available: ' \
+                             f'{", ".join(self.robot.waypoints()) or "none"}'
+            x, y, yaw = wp
+        else:
+            x, y, yaw = step["x"], step["y"], step["yaw"]
+        if not self.robot.nav_ready():
+            return False, ("Nav2 action server not reachable - "
+                           "is the origin-nav container running?")
+        goal = self.robot.nav_send(x, y, yaw)
+        if goal is None:
+            return False, "Nav2 rejected the goal (check the RViz logs)"
+        first_dist = None
+        while True:
+            state, dist = self.robot.nav_status(goal)
+            if first_dist is None and dist:
+                first_dist = dist
+            detail = "waiting for the planner..."
+            if state == "active":
+                if dist is not None:
+                    done = 1.0 - dist / first_dist if first_dist else 0.0
+                    self._progress(i, done, 1.0)
+                    detail = f"{dist:.1f} m to go"
+            self._set_step(i, detail=detail)
+            if state == "succeeded":
+                return True, f"arrived at ({x:.2f}, {y:.2f})"
+            if state in ("failed", "aborted"):
+                return False, f"Nav2 {state} - no route or the goal was unreachable"
+            if state == "cancelled":
+                return False, "Nav2 cancelled the goal"
+            if state == "rejected":
+                return False, "Nav2 rejected the goal (inside a no-go zone?)"
+            if not self._pump(i, deadline, abort_nav=goal):
+                if dist is not None:
+                    return False, (f"timed out after {step['_budget']:.0f} s, "
+                                   f"{dist:.1f} m to go")
+                return False, f"timed out after {step['_budget']:.0f} s"
+            self._sleep(0.15)  # Nav2 feedback is slow; poll at ~4 Hz
+
+    def _step_arm(self, i, step, deadline):
+        """Move the arm joints and check the reached angles."""
+        if not self._wait_for_arm(i, deadline):
+            return False, ("arm not connected or no feedback yet - is the "
+                           "ufactory-studio container running (see the Arm panel)?")
+        current = self.arm.angles()
+        target = [t if t is not None else current[j] for j, t in enumerate(step["angles"])]
+        moving = [j for j in range(len(target))
+                  if step["angles"][j] is not None]
+        self._set_step(i, targets=target)
+        code = self.arm.command_joints(target, step["speed"])
+        if code != 0:
+            return False, f"xArm rejected the command (SDK code {code})"
+        gap0 = max(abs(target[j] - current[j]) for j in moving) if moving else 0.0
+        tol = step["tolerance_deg"]
+        while True:
+            angles = self.arm.angles()
+            if angles is None:
+                return False, "lost the arm connection while moving"
+            gap = max(abs(angles[j] - target[j]) for j in moving) if moving else 0.0
+            self._set_step(i, detail=f"within {gap:.1f} deg of target "
+                                     f"(tolerance {tol:.0f} deg)")
+            self._progress(i, gap0 - gap, gap0)
+            if gap <= tol:
+                moved = ", ".join(f"J{j + 1}={angles[j]:.1f}" for j in moving)
+                return True, f"reached {moved} deg (within {tol:.0f} deg)"
+            if not self._pump(i, deadline):
+                return False, (f"timed out after {step['_budget']:.0f} s, "
+                               f"still {gap:.1f} deg from the target")
+            self._sleep(0.1)
+
+    def _wait_for_arm(self, i, deadline):
+        """Wait a moment for the arm monitor thread to produce feedback."""
+        while self.arm.angles() is None:
+            if not self._pump(i, deadline):
+                return False
+        return True

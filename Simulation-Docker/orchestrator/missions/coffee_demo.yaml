@@ -1,0 +1,46 @@
+# COFF-E demo mission - the "drive, serve, drive on" flow:
+# the robot drives for 60 seconds, the arm swings 90 degrees, and only when
+# BOTH steps were verified does the robot drive further.
+#
+# Times are Gazebo simulation time (the sim runs at ~0.5x real time, see the
+# dashboard header), so 60 s here takes about 2 minutes to watch.
+# Blind driving can hit a wall - that is exactly what the checks are for:
+# the mission then stops with FAILED instead of pretending to work.
+
+name: "COFF-E demo: drive 60 s -> arm 90 degrees -> drive further"
+clock: sim
+
+steps:
+  - name: "Drive forward for 60 s"
+    type: drive
+    duration: 60          # seconds (simulation time)
+    linear: 0.25          # m/s forward; negative = backwards
+    angular: 0.0          # rad/s; give it a little turn rate to curve the path
+    # no explicit timeout: the engine allows for the measured sim speed
+    # (e.g. 60 s at 0.5x real time takes ~4 wall minutes)
+    check:
+      min_distance: 2.0  # odometry must move at least 2 m, otherwise FAIL
+
+  - name: "Arm: swing joint 1 to 90 degrees"
+    type: arm_joint
+    joint: 1              # joint number 1..6, or use angles: [90, 0, 0, 0, 0, 0]
+    angle_deg: 90
+    speed: 30             # degrees/s, like in UFACTORY Studio
+    check:
+      tolerance_deg: 3    # the step passes when the joint is within 3 degrees
+
+  - name: "Arm: back to the home position"
+    type: arm_home
+    speed: 30
+
+  - name: "Drive further for 30 s"
+    type: drive
+    duration: 30
+    linear: 0.25
+    check:
+      min_distance: 1.0
+
+  - name: "Drive back to the Home waypoint with Nav2"
+    type: goto
+    waypoint: Home        # or coordinates: x: 2.06, y: -1.55, yaw: 0.0
+    # the planner takes a while when the sim runs below real time
