@@ -17,7 +17,7 @@
     font: 13px/1.45 system-ui, "Segoe UI", Roboto, sans-serif;
     display: flex; flex-direction: column;
   }
-  button, select {
+  button, select, input {
     font: inherit; color: var(--text); background: var(--panel2);
     border: 1px solid var(--line); border-radius: 6px; padding: 5px 12px;
   }
@@ -49,7 +49,7 @@
 
   main {
     flex: 1; display: grid; gap: 12px; padding: 12px; overflow: auto;
-    grid-template-columns: 360px minmax(380px, 1fr) minmax(340px, 1fr);
+    grid-template-columns: 430px minmax(360px, 1fr) minmax(320px, 1fr);
     grid-template-rows: auto auto 190px;
     grid-template-areas: "steps robot arm" "steps robot arm" "log log log";
   }
@@ -119,6 +119,38 @@
     background: #43201f; color: #ffb3b3; font-size: 12px;
   }
   #steps-panel #steps { max-height: 70vh; }
+
+  /* step editor */
+  .edbar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 4px; }
+  .edbar button { padding: 4px 10px; }
+  #ed-name { flex: 1; min-width: 150px; background: #0b0e12; }
+  #ed-file { font-size: 11px; margin-bottom: 6px; }
+  #ed-banner { font-size: 12px; margin-bottom: 8px; padding: 5px 8px; border-radius: 6px; background: var(--panel2); }
+  #ed-banner.err { background: #43201f; color: #ffb3b3; }
+  #ed-banner.ok { color: #7fc9a9; }
+  .step .head { cursor: pointer; }
+  .step.open { border-color: var(--warn); }
+  .step.invalid { border-color: var(--fail); }
+  .step.locked .name::after { content: " 🔒"; font-size: 11px; }
+  .step.skipped, .step.pending { opacity: .9; }
+  .step .sum { margin: 2px 0 0 28px; font-size: 12px; color: #b9c2ce; }
+  .badge { font-size: 10px; font-weight: 700; letter-spacing: .5px; padding: 1px 6px; border-radius: 4px; flex: 0 0 auto; }
+  .badge.avular { background: #10314e; color: #7cc0ff; }
+  .badge.xarm { background: #2a2350; color: #b3a6ff; }
+  .badge.wait { background: #2a313c; color: var(--dim); }
+  .form { margin: 10px 0 2px 28px; display: grid; gap: 6px; }
+  .form label, .form .frow { display: grid; grid-template-columns: 120px 1fr; align-items: center; gap: 8px; font-size: 12px; color: var(--dim); }
+  .form input, .form select { background: #0b0e12; padding: 4px 8px; width: 100%; min-width: 0; }
+  .form input:disabled, .form select:disabled { opacity: .55; }
+  .devices { display: flex; gap: 4px; flex-wrap: wrap; }
+  .devices button { padding: 3px 8px; font-size: 12px; }
+  .devices button.on { border-color: var(--accent); background: #10314e; color: #cfe6ff; }
+  .angles { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; }
+  .angles input { padding: 4px; }
+  .acts { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+  .acts button { padding: 2px 8px; font-size: 12px; }
+  .addbar { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; align-items: center; }
+  .addbar button { padding: 4px 10px; font-size: 12px; }
   @media (max-width: 1150px) {
     main { grid-template-columns: 1fr 1fr; grid-template-areas: "steps robot" "steps arm" "log log"; }
   }
@@ -134,7 +166,7 @@
   <h1>COFF-E Mission Dashboard</h1>
   <div class="controls">
     <select id="mission-select" title="Mission file (from orchestrator/missions)"></select>
-    <button id="start" class="primary">Start mission</button>
+    <button id="start" class="primary" title="Runs the mission as it is in the step editor">Start mission</button>
     <button id="abort" class="danger" disabled>Abort</button>
   </div>
   <span id="state" class="pill idle">IDLE</span>
@@ -157,9 +189,22 @@
 
 <main>
   <section class="panel" id="steps-panel">
-    <h2>Mission steps <span id="mission-name" class="muted" style="text-transform:none;letter-spacing:0"></span></h2>
+    <h2>Step editor <span id="mission-name" class="muted" style="text-transform:none;letter-spacing:0">click a step to edit it</span></h2>
+    <div class="edbar">
+      <input id="ed-name" placeholder="Mission name" title="Mission name">
+      <button id="ed-save" title="Save to the selected mission file">Save</button>
+      <button id="ed-saveas">Save as…</button>
+      <button id="ed-new">New</button>
+    </div>
+    <div id="ed-file" class="muted"></div>
+    <div id="ed-banner"></div>
     <div id="reason"></div>
     <div id="steps"></div>
+    <div class="addbar"><span class="muted">Add step:</span>
+      <button data-add="avular">+ Avular Origin One</button>
+      <button data-add="xarm">+ xArm 6</button>
+      <button data-add="wait">+ Wait</button>
+    </div>
   </section>
 
   <section class="panel" id="robot-panel">
@@ -240,8 +285,10 @@ function renderHeader(st) {
   const pill = $("state");
   pill.textContent = state.toUpperCase();
   pill.className = "pill " + state;
-  $("start").disabled = state === "running" || !$("mission-select").value;
+  $("start").disabled = state === "running" || !ed.doc;
   $("abort").disabled = state !== "running";
+  $("mission-select").disabled = state === "running";
+  $("ed-new").disabled = state === "running";
 
   $("robot-dot").classList.toggle("on", st.robot.connected);
   $("robot-xy").textContent = st.robot.connected
@@ -252,32 +299,11 @@ function renderHeader(st) {
   const f = st.robot.time_factor;
   $("sim-chip").textContent = f ? `sim ${f.toFixed(2)}x` : "sim (no /clock)";
   $("map-chip").textContent = st.robot.map ? `map: ${st.robot.map}` : "";
-
-  $("mission-name").textContent = st.mission.state === "idle"
-    ? "— pick a mission and press Start" : st.mission.mission_name || "";
 }
 
 /* ----------------------------------------------------------------- steps */
 
-function renderSteps(mission) {
-  const box = $("steps");
-  box.innerHTML = "";
-  for (let i = 0; i < mission.steps.length; i++) {
-    const s = mission.steps[i];
-    const el = document.createElement("div");
-    el.className = "step " + s.status;
-    const dur = s.duration_s ? ` · ${s.duration_s.toFixed(0)} s` : "";
-    el.innerHTML = `
-      <div class="row1">
-        <div class="idx">${i + 1}</div>
-        <div class="name">${escapeHtml(s.name)}</div>
-        <div class="type">${s.type}</div>
-        <div class="icon">${STEP_ICON[s.status] || "?"}</div>
-      </div>
-      <div class="detail">${escapeHtml(s.detail || "")}${dur && s.status === "passed" ? dur : ""}</div>
-      <div class="bar"><div style="width:${Math.round((s.progress || 0) * 100)}%"></div></div>`;
-    box.appendChild(el);
-  }
+function renderReason(mission) {
   const reason = $("reason");
   if (mission.reason && mission.state !== "running") {
     reason.style.display = "block";
@@ -288,6 +314,419 @@ function renderSteps(mission) {
   }
 }
 
+/* ----------------------------------------------------------- step editor */
+// The editor holds the mission as written in the file (raw steps). While a
+// mission started from here runs, the editor and the engine use the same
+// step indexes, so the live status is drawn straight onto the edited steps.
+const DEVICE_TYPES = { avular: ["drive", "goto"], xarm: ["arm_joint", "arm_home"], wait: ["wait"] };
+const DEVICE_NAME = { avular: "Avular Origin One", xarm: "xArm 6", wait: "Wait" };
+const DEVICE_BADGE = { avular: "AVULAR", xarm: "XARM", wait: "WAIT" };
+const TYPE_LABEL = { drive: "Drive for a time", goto: "Navigate with Nav2", arm_joint: "Move joints", arm_home: "Home position", wait: "Wait" };
+const ed = { doc: null, file: "", saved: "", open: -1, runId: null, error: "", errStep: -1, liveMsg: "", renderedLock: -2, loading: false };
+let validateTimer = null;
+
+function deviceOf(type) { return type === "wait" ? "wait" : String(type).startsWith("arm") ? "xarm" : "avular"; }
+function dirty() { return ed.doc && JSON.stringify(ed.doc) !== ed.saved; }
+function waypointNames() { return ((latest && latest.robot.waypoints) || []).map(w => w.name); }
+
+function linkedRunning() {
+  const m = latest && latest.mission;
+  return !!(m && ed.runId && m.run_id === ed.runId && m.state === "running");
+}
+function lockedUpTo() { return linkedRunning() ? latest.mission.current : -1; }
+
+function defaultStep(type) {
+  switch (type) {
+    case "drive": return { name: "Drive forward for 10 s", type, duration: 10, linear: 0.25, angular: 0, check: { min_distance: 0.5 } };
+    case "goto": return { name: "Navigate to a waypoint", type, waypoint: waypointNames()[0] || "Home" };
+    case "arm_joint": return { name: "Arm: joint 1 to 90 degrees", type, joint: 1, angle_deg: 90, speed: 30, check: { tolerance_deg: 3 } };
+    case "arm_home": return { name: "Arm: back to home", type, speed: 30 };
+    default: return { name: "Wait 5 s", type: "wait", duration: 5 };
+  }
+}
+
+function summary(s) {
+  const n = (v, d = 0) => (v === undefined || v === null || v === "") ? "?" : Number(v).toFixed(d);
+  switch (s.type) {
+    case "drive": {
+      let t = `drive ${n(s.duration)} s at ${n(s.linear ?? 0, 2)} m/s`;
+      if (s.angular) t += `, turning ${n(s.angular, 2)} rad/s`;
+      if (s.check && s.check.min_distance != null) t += ` · check: moved ≥ ${s.check.min_distance} m`;
+      return t;
+    }
+    case "goto":
+      return s.waypoint != null ? `Nav2 to waypoint "${s.waypoint}"`
+        : `Nav2 to x ${n(s.x, 2)}, y ${n(s.y, 2)}, yaw ${n(s.yaw ?? 0, 2)}`;
+    case "arm_joint": {
+      const tol = (s.check && s.check.tolerance_deg) ?? 3;
+      const what = s.angles
+        ? s.angles.map((a, j) => a == null ? null : `J${j + 1} ${a}°`).filter(Boolean).join(", ")
+        : `J${s.joint} to ${s.angle_deg}°`;
+      return `${what || "no joints set"} at ${s.speed ?? 30}°/s · check: ±${tol}°`;
+    }
+    case "arm_home": return `all joints to 0° at ${s.speed ?? 30}°/s`;
+    case "wait": return `wait ${n(s.duration)} s`;
+  }
+  return String(s.type);
+}
+
+/* form helpers: data-path names the key in the raw step ("check.min_distance", "angles.2") */
+function fld(label, path, value, attrs) {
+  const v = value === undefined || value === null ? "" : escapeHtml(value);
+  return `<label><span>${label}</span><input data-path="${path}" value="${v}" ${attrs || ""}></label>`;
+}
+function num(label, path, value, unit, dis, placeholder) {
+  return fld(`${label}${unit ? ` <span class="muted">(${unit})</span>` : ""}`, path, value,
+    `type="number" step="any" ${dis} ${placeholder ? `placeholder="${placeholder}"` : ""}`);
+}
+
+function stepForm(s, i, lock) {
+  const locked = i <= lock;
+  const dis = locked ? "disabled" : "";
+  const dev = deviceOf(s.type);
+  let h = `<div class="frow">Done by<div class="devices">` +
+    Object.keys(DEVICE_NAME).map(d =>
+      `<button data-dev="${d}" class="${d === dev ? "on" : ""}" ${dis}>${DEVICE_NAME[d]}</button>`).join("") +
+    `</div></div>`;
+  if (DEVICE_TYPES[dev].length > 1) {
+    h += `<label>Action<select data-act="type" ${dis}>` + DEVICE_TYPES[dev].map(t =>
+      `<option value="${t}" ${t === s.type ? "selected" : ""}>${TYPE_LABEL[t]}</option>`).join("") + `</select></label>`;
+  }
+  h += fld("Name", "name", s.name, dis);
+  const chk = s.check || {};
+  switch (s.type) {
+    case "drive":
+      h += num("Duration", "duration", s.duration, "s", dis);
+      h += num("Speed", "linear", s.linear, "m/s, minus = backwards", dis);
+      h += num("Turn rate", "angular", s.angular, "rad/s", dis);
+      h += num("Check: min. distance", "check.min_distance", chk.min_distance, "m", dis, "no check");
+      break;
+    case "goto": {
+      const wpMode = s.waypoint != null;
+      h += `<label>Target<select data-act="gotomode" ${dis}>
+        <option value="wp" ${wpMode ? "selected" : ""}>Cerebra waypoint</option>
+        <option value="xy" ${wpMode ? "" : "selected"}>Map coordinates</option></select></label>`;
+      if (wpMode) {
+        const names = waypointNames();
+        if (!names.includes(s.waypoint)) names.push(s.waypoint);
+        h += `<label>Waypoint<select data-path="waypoint" data-kind="str" ${dis}>` + names.map(w =>
+          `<option ${w === s.waypoint ? "selected" : ""}>${escapeHtml(w)}</option>`).join("") + `</select></label>`;
+      } else {
+        h += num("x", "x", s.x, "m", dis) + num("y", "y", s.y, "m", dis) + num("Yaw", "yaw", s.yaw, "rad", dis);
+      }
+      break;
+    }
+    case "arm_joint": {
+      const all = Array.isArray(s.angles);
+      h += `<label>Joints<select data-act="armmode" ${dis}>
+        <option value="one" ${all ? "" : "selected"}>One joint</option>
+        <option value="all" ${all ? "selected" : ""}>Several joints</option></select></label>`;
+      if (all) {
+        h += `<div class="frow"><span>Angles <span class="muted">(°, empty = keep)</span></span><div class="angles">` +
+          s.angles.map((a, j) => `<input type="number" step="any" data-path="angles.${j}" placeholder="J${j + 1}"
+            value="${a == null ? "" : a}" title="J${j + 1}" ${dis}>`).join("") + `</div></div>`;
+      } else {
+        h += `<label>Joint<select data-path="joint" data-kind="int" ${dis}>` + [1, 2, 3, 4, 5, 6].map(j =>
+          `<option value="${j}" ${j === s.joint ? "selected" : ""}>J${j}${j === 1 ? " (base rotation)" : ""}</option>`).join("") +
+          `</select></label>`;
+        h += num("Angle", "angle_deg", s.angle_deg, "°", dis);
+      }
+      h += num("Speed", "speed", s.speed, "°/s", dis);
+      h += num("Check: tolerance", "check.tolerance_deg", chk.tolerance_deg, "°", dis, "3");
+      break;
+    }
+    case "arm_home":
+      h += num("Speed", "speed", s.speed, "°/s", dis);
+      h += num("Check: tolerance", "check.tolerance_deg", chk.tolerance_deg, "°", dis, "3");
+      break;
+    case "wait":
+      h += num("Duration", "duration", s.duration, "s", dis);
+      break;
+  }
+  h += num("Timeout", "timeout", s.timeout, "real s", dis, "automatic");
+  const last = ed.doc.steps.length - 1;
+  const canInsert = i >= lock;
+  h += `<div class="acts">
+    <button data-act="up" ${locked || i - 1 <= lock ? "disabled" : ""}>↑ Up</button>
+    <button data-act="down" ${locked || i === last ? "disabled" : ""}>↓ Down</button>
+    <button data-act="dup" ${canInsert ? "" : "disabled"}>Duplicate</button>
+    <button data-act="ins-avular" ${canInsert ? "" : "disabled"}>+ Avular after</button>
+    <button data-act="ins-xarm" ${canInsert ? "" : "disabled"}>+ xArm after</button>
+    <button data-act="del" class="danger" ${locked ? "disabled" : ""}>Delete</button>
+    <button data-act="close">Close</button></div>`;
+  if (locked) h += `<div class="muted">This step already ran or is running, so it is locked.</div>`;
+  return h;
+}
+
+function renderEditor() {
+  const box = $("steps");
+  const a = document.activeElement;
+  const keep = a && a.dataset && a.dataset.path && a.closest(".step")
+    ? { i: a.closest(".step").dataset.i, p: a.dataset.path, s: a.selectionStart } : null;
+  if (document.activeElement !== $("ed-name")) $("ed-name").value = ed.doc ? ed.doc.name || "" : "";
+  const lock = lockedUpTo();
+  ed.renderedLock = lock;
+  if (!ed.doc) { box.innerHTML = `<div class="muted">No mission loaded.</div>`; return; }
+  box.innerHTML = ed.doc.steps.map((s, i) => {
+    const dev = deviceOf(s.type);
+    return `<div class="step pending ${ed.open === i ? "open" : ""} ${i <= lock ? "locked" : ""} ${ed.errStep === i ? "invalid" : ""}" id="st${i}" data-i="${i}">
+      <div class="head" title="Click to edit">
+        <div class="row1">
+          <div class="idx">${i + 1}</div>
+          <span class="badge ${dev}">${DEVICE_BADGE[dev]}</span>
+          <div class="name">${escapeHtml(s.name || s.type)}</div>
+          <div class="icon" id="si${i}">·</div>
+        </div>
+        <div class="sum">${escapeHtml(summary(s))}</div>
+        <div class="detail" id="sd${i}"></div>
+        <div class="bar"><div id="sb${i}"></div></div>
+      </div>
+      ${ed.open === i ? `<div class="form">${stepForm(s, i, lock)}</div>` : ""}
+    </div>`;
+  }).join("");
+  if (keep) {
+    const el = document.querySelector(`#st${keep.i} [data-path="${keep.p}"]`);
+    if (el && !el.disabled) { el.focus(); try { el.setSelectionRange(keep.s, keep.s); } catch (e) { /* number inputs */ } }
+  }
+  renderFileInfo();
+  renderBanner();
+  if (latest) updateEditorStatus(latest);
+}
+
+function refreshHead(i) {
+  const el = $("st" + i);
+  if (!el || !ed.doc.steps[i]) return;
+  el.querySelector(".name").textContent = ed.doc.steps[i].name || ed.doc.steps[i].type;
+  el.querySelector(".sum").textContent = summary(ed.doc.steps[i]);
+}
+
+function adoptRun(m) {
+  ed.doc = { name: m.mission_name, steps: m.steps.map(s => s.raw) };
+  if (m.clock && m.clock !== "sim") ed.doc.clock = m.clock;
+  ed.file = /\.(ya?ml|json)$/i.test(m.mission_file || "") ? m.mission_file : "";
+  ed.saved = ed.file ? JSON.stringify(ed.doc) : "";
+  ed.runId = m.run_id; ed.open = -1; ed.error = ""; ed.errStep = -1;
+  renderEditor();
+}
+
+function updateEditorStatus(st) {
+  const m = st.mission;
+  if (m.state === "running" && m.run_id !== ed.runId && m.steps.length && m.steps[0].raw) {
+    adoptRun(m);  // a mission started elsewhere (or before a page reload)
+    return;
+  }
+  if (lockedUpTo() !== ed.renderedLock) { renderEditor(); return; }
+  if (!ed.doc) return;
+  const linked = ed.runId && m.run_id === ed.runId;
+  ed.doc.steps.forEach((s, i) => {
+    const el = $("st" + i);
+    if (!el) return;
+    const ms = linked ? m.steps[i] : null;
+    const status = ms ? ms.status : "pending";
+    if (!el.classList.contains(status)) {
+      el.classList.remove("pending", "running", "passed", "failed", "skipped", "aborted");
+      el.classList.add(status);
+    }
+    $("si" + i).textContent = STEP_ICON[status] || "·";
+    const dur = ms && ms.duration_s && status === "passed" ? ` · ${ms.duration_s.toFixed(0)} s` : "";
+    $("sd" + i).textContent = ms ? (ms.detail || "") + dur : "";
+    $("sb" + i).style.width = Math.round(((ms && ms.progress) || 0) * 100) + "%";
+  });
+  $("mission-name").textContent = linked && m.state === "running"
+    ? `running step ${m.current + 1} of ${m.steps.length}` : "click a step to edit it";
+}
+
+function renderFileInfo() {
+  $("ed-file").textContent = (ed.file ? `file: ${ed.file}` : "not saved to a file yet") +
+    (dirty() ? " · unsaved changes" : "");
+}
+
+function renderBanner() {
+  const b = $("ed-banner");
+  if (!ed.doc) { b.className = ""; b.textContent = ""; return; }
+  if (ed.error) { b.className = "err"; b.textContent = "⚠ " + ed.error; return; }
+  b.className = "ok";
+  b.textContent = linkedRunning()
+    ? (ed.liveMsg || "Mission running: 🔒 steps already ran. Edit the upcoming steps and they apply live.")
+    : "✓ Mission is valid. Press Start mission to run it as shown here.";
+}
+
+function markInvalid() {
+  ed.doc.steps.forEach((s, i) => { const el = $("st" + i); if (el) el.classList.toggle("invalid", i === ed.errStep); });
+}
+
+function changed(structural) {
+  const m = latest && latest.mission;
+  const running = linkedRunning();
+  // Results of a finished run no longer describe an edited plan.
+  if (!running && ed.runId && m && m.run_id === ed.runId) ed.runId = null;
+  ed.liveMsg = "";
+  if (structural) renderEditor(); else { refreshHead(ed.open); renderFileInfo(); }
+  clearTimeout(validateTimer);
+  validateTimer = setTimeout(() => validateAndPush(running), 350);
+}
+
+async function validateAndPush(running) {
+  if (!ed.doc) return;
+  let r;
+  try {
+    const res = await fetch("/api/validate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ doc: ed.doc }) });
+    r = await res.json();
+  } catch (err) { r = { ok: false, error: String(err) }; }
+  ed.error = r.ok ? "" : r.error;
+  const hit = !r.ok && /step (\d+)/.exec(r.error || "");
+  ed.errStep = hit ? Number(hit[1]) - 1 : -1;
+  markInvalid();
+  if (r.ok && running && linkedRunning()) {
+    const res = await api("live_edit", { doc: ed.doc });
+    ed.liveMsg = res ? "✓ Live: the running mission now uses the edited upcoming steps." : "";
+  }
+  renderBanner();
+}
+
+function readValue(el) {
+  if (el.dataset.kind === "int") return parseInt(el.value, 10);
+  if (el.dataset.kind === "str") return el.value;
+  if (el.type === "number") {
+    if (el.value === "") return undefined;
+    const v = Number(el.value);
+    return Number.isFinite(v) ? v : undefined;
+  }
+  return el.value;
+}
+
+function setPath(step, path, val) {
+  const parts = path.split(".");
+  if (parts[0] === "angles") { step.angles[Number(parts[1])] = val === undefined ? null : val; return; }
+  if (parts.length === 2) {
+    const obj = step[parts[0]] || (step[parts[0]] = {});
+    if (val === undefined) delete obj[parts[1]]; else obj[parts[1]] = val;
+    if (!Object.keys(obj).length) delete step[parts[0]];
+    return;
+  }
+  if (val === undefined) delete step[path]; else step[path] = val;
+}
+
+function insertStep(at, step) {
+  ed.doc.steps.splice(at, 0, step);
+  ed.open = at;
+  changed(true);
+  setTimeout(() => { const el = $("st" + at); if (el) el.scrollIntoView({ block: "nearest" }); }, 0);
+}
+
+function stepAction(act, i) {
+  const steps = ed.doc.steps;
+  const s = steps[i];
+  if (act === "close") { ed.open = -1; renderEditor(); return; }
+  if (act === "up") { [steps[i - 1], steps[i]] = [steps[i], steps[i - 1]]; ed.open = i - 1; }
+  else if (act === "down") { [steps[i + 1], steps[i]] = [steps[i], steps[i + 1]]; ed.open = i + 1; }
+  else if (act === "dup") return insertStep(i + 1, JSON.parse(JSON.stringify(s)));
+  else if (act === "ins-avular") return insertStep(i + 1, defaultStep("drive"));
+  else if (act === "ins-xarm") return insertStep(i + 1, defaultStep("arm_joint"));
+  else if (act === "del") {
+    if (steps.length === 1) { flash("A mission needs at least one step."); return; }
+    steps.splice(i, 1); ed.open = -1;
+  } else if (act === "gotomode") {
+    const wp = document.querySelector(`#st${i} [data-act="gotomode"]`).value === "wp";
+    if (wp) { delete s.x; delete s.y; delete s.yaw; s.waypoint = waypointNames()[0] || "Home"; }
+    else { delete s.waypoint; s.x = 0; s.y = 0; s.yaw = 0; }
+  } else if (act === "armmode") {
+    const all = document.querySelector(`#st${i} [data-act="armmode"]`).value === "all";
+    if (all) {
+      s.angles = [null, null, null, null, null, null];
+      if (s.joint) s.angles[s.joint - 1] = s.angle_deg ?? 0;
+      delete s.joint; delete s.angle_deg;
+    } else {
+      const j = Array.isArray(s.angles) ? Math.max(0, s.angles.findIndex(a => a != null)) : 0;
+      s.joint = j + 1; s.angle_deg = (s.angles && s.angles[j]) ?? 0;
+      delete s.angles;
+    }
+  } else if (act === "type") {
+    const t = document.querySelector(`#st${i} [data-act="type"]`).value;
+    steps[i] = defaultStep(t);
+  }
+  changed(true);
+}
+
+$("steps").addEventListener("click", (e) => {
+  const stepEl = e.target.closest(".step");
+  if (!stepEl || !ed.doc) return;
+  const i = Number(stepEl.dataset.i);
+  const devBtn = e.target.closest("button[data-dev]");
+  if (devBtn) {
+    if (deviceOf(ed.doc.steps[i].type) !== devBtn.dataset.dev) {
+      ed.doc.steps[i] = defaultStep(DEVICE_TYPES[devBtn.dataset.dev][0]);
+      changed(true);
+    }
+    return;
+  }
+  const actBtn = e.target.closest("button[data-act]");
+  if (actBtn) { stepAction(actBtn.dataset.act, i); return; }
+  if (e.target.closest(".head")) { ed.open = ed.open === i ? -1 : i; renderEditor(); }
+});
+$("steps").addEventListener("change", (e) => {
+  const el = e.target;
+  const stepEl = el.closest(".step");
+  if (!stepEl) return;
+  const i = Number(stepEl.dataset.i);
+  if (el.tagName === "SELECT" && el.dataset.act) { stepAction(el.dataset.act, i); return; }
+  if (el.tagName === "SELECT" && el.dataset.path) { setPath(ed.doc.steps[i], el.dataset.path, readValue(el)); changed(false); }
+});
+$("steps").addEventListener("input", (e) => {
+  const el = e.target;
+  if (el.tagName !== "INPUT" || !el.dataset.path) return;
+  const i = Number(el.closest(".step").dataset.i);
+  setPath(ed.doc.steps[i], el.dataset.path, readValue(el));
+  changed(false);
+});
+$("ed-name").addEventListener("input", (e) => { if (ed.doc) { ed.doc.name = e.target.value; changed(false); } });
+document.querySelectorAll("[data-add]").forEach(b => b.addEventListener("click", () => {
+  if (!ed.doc) return;
+  insertStep(ed.doc.steps.length, defaultStep(DEVICE_TYPES[b.dataset.add][0]));
+}));
+
+async function loadMission(file) {
+  ed.loading = true;
+  try {
+    const res = await fetch("/api/mission/" + encodeURIComponent(file));
+    const r = await res.json();
+    if (r.error) { flash(r.error); return; }
+    ed.doc = { name: r.doc.name || file, steps: Array.isArray(r.doc.steps) ? r.doc.steps : [] };
+    if (r.doc.clock) ed.doc.clock = r.doc.clock;
+    ed.file = file; ed.saved = JSON.stringify(ed.doc);
+    ed.open = -1; ed.runId = null; ed.error = ""; ed.errStep = -1; ed.liveMsg = "";
+    renderEditor();
+    validateAndPush(false);
+  } catch (err) { flash(String(err)); }
+  finally { ed.loading = false; }
+}
+
+async function saveMission(file) {
+  const r = await api("save", { file, doc: ed.doc });
+  if (!r) return;
+  ed.file = r.file; ed.saved = JSON.stringify(ed.doc);
+  localStorage.setItem("mission", r.file);
+  $("mission-select").dataset.sig = "";  // re-read the list, then select the file
+  renderFileInfo();
+}
+
+function saveAs() {
+  const name = prompt("File name (saved in orchestrator/missions):", ed.file || "my_mission.yaml");
+  if (!name) return;
+  const exists = latest && latest.missions.some(m => m.file === name);
+  if (exists && name !== ed.file && !confirm(`${name} already exists. Overwrite it?`)) return;
+  saveMission(name);
+}
+
+$("ed-save").addEventListener("click", () => { if (ed.doc) (ed.file ? saveMission(ed.file) : saveAs()); });
+$("ed-saveas").addEventListener("click", () => { if (ed.doc) saveAs(); });
+$("ed-new").addEventListener("click", () => {
+  if (dirty() && !confirm("Discard the unsaved changes?")) return;
+  ed.doc = { name: "New mission", steps: [defaultStep("drive"), defaultStep("arm_joint")] };
+  ed.file = ""; ed.saved = ""; ed.open = 0; ed.runId = null; ed.error = ""; ed.errStep = -1;
+  renderEditor();
+  validateAndPush(false);
+});
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
@@ -485,8 +924,15 @@ async function poll() {
       $("mission-select").dataset.sig = sig;
       renderMissions(latest.missions);
     }
+    if (!ed.doc && !ed.loading) {
+      const m = st.mission;
+      if (m.run_id > 0 && m.steps.length && m.steps[0].raw) adoptRun(m);
+      else if ($("mission-select").value) loadMission($("mission-select").value);
+    }
     renderHeader(st);
-    renderSteps(st.mission);
+    updateEditorStatus(st);
+    renderReason(st.mission);
+    if (linkedRunning() || ed.liveMsg === "") renderBanner();
     renderRobot(st);
     renderArm(st);
     renderLog(st.mission);
@@ -497,12 +943,23 @@ async function poll() {
 }
 
 $("start").addEventListener("click", async () => {
-  localStorage.setItem("mission", $("mission-select").value);
-  const res = await api("start", { mission: $("mission-select").value });
-  if (res) { logLines = 0; $("log").innerHTML = ""; poll(); }
+  if (!ed.doc) return;
+  const res = await api("start", { doc: ed.doc, file: ed.file || "(unsaved)" });
+  if (res) {
+    ed.runId = res.run_id; ed.open = -1; ed.liveMsg = "";
+    logLines = 0; $("log").innerHTML = "";
+    poll();
+  }
 });
 $("abort").addEventListener("click", () => api("abort"));
-$("mission-select").addEventListener("change", (e) => localStorage.setItem("mission", e.target.value));
+$("mission-select").addEventListener("change", (e) => {
+  if (dirty() && !confirm("Discard the unsaved changes in the step editor?")) {
+    e.target.value = ed.file;
+    return;
+  }
+  localStorage.setItem("mission", e.target.value);
+  loadMission(e.target.value);
+});
 
 $("btn-gazebo").addEventListener("click", () => {
   const box = $("gazebo-frame");

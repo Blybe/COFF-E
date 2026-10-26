@@ -4,8 +4,15 @@ engine together and serves the dashboard.
   GET  /             the dashboard (dashboard/index.html)
   GET  /api/status   everything the dashboard polls (robot, arm, mission,
                     step states, log, mission list)
-  POST /api/start    {"mission": "quick_check.yaml"} - start a mission
+  POST /api/start    {"mission": "quick_check.yaml"} - start a mission file,
+                    or {"doc": {...}, "file": "x.yaml"} - start the mission
+                    from the step editor without saving it first
   POST /api/abort    abort the running mission
+  GET  /api/mission/<file>   the mission file as written, for the editor
+  POST /api/validate {"doc": {...}} - check an edited mission
+  POST /api/save     {"file": "x.yaml", "doc": {...}} - write a mission file
+  POST /api/live_edit {"doc": {...}} - replace the steps of the running
+                    mission that have not started yet
 
 Environment variables:
   XARM_HOST       address of the (simulated) xArm control box
@@ -70,9 +77,76 @@ def status():
     })
 
 
+def _doc_mission(data):
+    """Normalized mission from an editor document, or raises MissionError."""
+    doc = data.get("doc")
+    if not isinstance(doc, dict):
+        raise mission_model.MissionError("missing mission document")
+    return mission_model.normalize_mission(mission_model.clean_doc(doc), origin="editor")
+
+
+@app.get("/api/mission/<path:fname>")
+def get_mission(fname):
+    if fname not in os.listdir(MISSIONS_DIR):
+        return jsonify(error=f'mission "{fname}" not found'), 404
+    try:
+        doc = mission_model.read_mission_doc(os.path.join(MISSIONS_DIR, fname))
+    except mission_model.MissionError as exc:
+        return jsonify(error=str(exc)), 400
+    return jsonify(file=fname, doc=doc)
+
+
+@app.post("/api/validate")
+def validate():
+    try:
+        mission = _doc_mission(request.get_json(silent=True) or {})
+    except mission_model.MissionError as exc:
+        return jsonify(ok=False, error=str(exc))
+    return jsonify(ok=True, steps=len(mission["steps"]))
+
+
+@app.post("/api/save")
+def save():
+    data = request.get_json(silent=True) or {}
+    try:
+        fname = mission_model.safe_filename(data.get("file"))
+        _doc_mission(data)  # never write a mission that cannot run
+        text = mission_model.dump_mission(data["doc"], fname)
+    except mission_model.MissionError as exc:
+        return jsonify(error=str(exc)), 400
+    try:
+        with open(os.path.join(MISSIONS_DIR, fname), "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+    except OSError as exc:
+        return jsonify(error=f"cannot write {fname}: {exc}"), 500
+    log(f"[dashboard] saved mission {fname}")
+    return jsonify(ok=True, file=fname)
+
+
+@app.post("/api/live_edit")
+def live_edit():
+    try:
+        mission = _doc_mission(request.get_json(silent=True) or {})
+        engine.update_pending(mission)
+    except mission_model.MissionError as exc:
+        return jsonify(error=str(exc)), 400
+    except RuntimeError as exc:
+        return jsonify(error=str(exc)), 409
+    return jsonify(ok=True)
+
+
 @app.post("/api/start")
 def start():
     data = request.get_json(silent=True) or {}
+    if data.get("doc") is not None:
+        try:
+            mission = _doc_mission(data)
+            run_id = engine.start(mission, mission_file=str(data.get("file") or "(editor)"))
+        except mission_model.MissionError as exc:
+            return jsonify(error=str(exc)), 400
+        except RuntimeError as exc:
+            return jsonify(error=str(exc)), 409
+        return jsonify(ok=True, mission=data.get("file"), run_id=run_id)
     missions = mission_model.list_missions(MISSIONS_DIR)
     if not missions:
         return jsonify(error=f"no mission files found in {MISSIONS_DIR}"), 400
@@ -87,10 +161,10 @@ def start():
     except mission_model.MissionError as exc:
         return jsonify(error=str(exc)), 400
     try:
-        engine.start(mission, mission_file=chosen)
+        run_id = engine.start(mission, mission_file=chosen)
     except RuntimeError as exc:
         return jsonify(error=str(exc)), 409
-    return jsonify(ok=True, mission=chosen)
+    return jsonify(ok=True, mission=chosen, run_id=run_id)
 
 
 @app.post("/api/abort")

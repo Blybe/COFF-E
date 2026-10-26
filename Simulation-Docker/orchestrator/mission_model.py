@@ -39,8 +39,10 @@ Pure Python on purpose (PyYAML is imported lazily, only for .yaml files) so
 this module can be unit tested on the host without Docker, ROS or the SDK.
 """
 
+import copy
 import json
 import os
+import re
 
 STEP_TYPES = ("drive", "goto", "arm_joint", "arm_home", "wait")
 
@@ -71,6 +73,14 @@ def _check_unknown_keys(step, known, ctx):
 
 
 def _normalize_step(raw, index):
+    step = _normalize_step_fields(raw, index)
+    # The step exactly as written, so the dashboard editor can show and edit
+    # it, and live edits can tell which steps were left unchanged.
+    step["raw"] = copy.deepcopy(raw)
+    return step
+
+
+def _normalize_step_fields(raw, index):
     if not isinstance(raw, dict):
         raise MissionError(f"step {index + 1}: must be a mapping, got {type(raw).__name__}")
 
@@ -206,6 +216,47 @@ def _parse(text, ext):
                                "(pip install pyyaml)") from exc
         return yaml.safe_load(text)
     return json.loads(text)
+
+
+def read_mission_doc(path):
+    """The mission file as written (not normalized), for the editor."""
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    try:
+        return _parse(text, os.path.splitext(path)[1])
+    except Exception as exc:
+        raise MissionError(f"{os.path.basename(path)}: {exc}") from exc
+
+
+def clean_doc(doc):
+    """Only the keys a mission file may contain, in a readable order."""
+    out = {"name": doc.get("name") or "unnamed mission"}
+    if doc.get("clock", "sim") != "sim":
+        out["clock"] = doc["clock"]
+    out["steps"] = doc.get("steps") or []
+    return out
+
+
+def dump_mission(doc, filename):
+    """Text for a mission file; YAML for .yaml/.yml, JSON otherwise."""
+    doc = clean_doc(doc)
+    if os.path.splitext(filename)[1].lower() in (".yaml", ".yml"):
+        import yaml
+        return ("# Saved from the COFF-E dashboard step editor.\n"
+                + yaml.safe_dump(doc, sort_keys=False, allow_unicode=True,
+                                 default_flow_style=None))
+    return json.dumps(doc, indent=2) + "\n"
+
+
+def safe_filename(name):
+    """Turns user input into a plain mission file name, or raises."""
+    name = (name or "").strip()
+    stem, ext = os.path.splitext(name)
+    if ext.lower() not in (".yaml", ".yml", ".json"):
+        stem, ext = name, ".yaml"
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,60}", stem):
+        raise MissionError("file name may only use letters, digits, '-', '_' and '.'")
+    return stem + ext.lower()
 
 
 def load_mission_text(text, filename="mission.yaml"):

@@ -198,8 +198,9 @@ services:
       - ./tools:/coffe/tools:ro
       # Mission files and dashboard are mounted, so they can be edited
       # without rebuilding the image: new/changed missions appear in the
-      # dashboard dropdown within a second (no container restart needed)
-      - ./orchestrator/missions:/missions:ro
+      # dashboard dropdown within a second (no container restart needed).
+      # Writable, because the dashboard step editor saves missions here.
+      - ./orchestrator/missions:/missions
       - ./orchestrator/dashboard:/app/dashboard:ro
     command:
       - bash

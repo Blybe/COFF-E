@@ -73,45 +73,67 @@ class MissionEngine:
         self._started_wall = 0.0
         self._ended_wall = 0.0
         self._reason = ""
+        self._run_id = 0         # increases with every start; lets the dashboard
+                                 # tell its own run apart from an older one
+        self._current = -1       # index of the step that runs (or just ran)
 
     # ------------------------------------------------------------- control
+
+    def _begin(self, mission, mission_file):
+        if self._state == RUNNING:
+            raise RuntimeError("a mission is already running")
+        self._mission = mission
+        self._mission_file = mission_file
+        self._steps = [self._blank_step(step) for step in mission["steps"]]
+        self._reason = ""
+        self._abort.clear()
+        self._state = RUNNING
+        self._run_id += 1
+        self._current = -1
+        self._started_wall = self.robot.wall_now()
+        self._ended_wall = 0.0
+        self._say(f"mission start: {mission['name']} ({len(mission['steps'])} steps, "
+                  f"clock: {mission['clock']})")
 
     def start(self, mission, mission_file=""):
         """Start a mission in the background. Raises RuntimeError if busy,
         so the server can answer with a clear error message."""
         with self._lock:
-            if self._state == RUNNING:
-                raise RuntimeError("a mission is already running")
-            self._mission = mission
-            self._mission_file = mission_file
-            self._steps = [self._blank_step(step) for step in mission["steps"]]
-            self._reason = ""
-            self._abort.clear()
-            self._state = RUNNING
-            self._started_wall = self.robot.wall_now()
-            self._ended_wall = 0.0
-            self._say(f"mission start: {mission['name']} ({len(mission['steps'])} steps, "
-                      f"clock: {mission['clock']})")
+            self._begin(mission, mission_file)
             self._thread = threading.Thread(target=self._run, daemon=True)
             self._thread.start()
+            return self._run_id
 
     def run_blocking(self, mission, mission_file=""):
         """Run a mission in the calling thread (used by the unit tests)."""
         with self._lock:
-            if self._state == RUNNING:
-                raise RuntimeError("a mission is already running")
-            self._mission = mission
-            self._mission_file = mission_file
-            self._steps = [self._blank_step(step) for step in mission["steps"]]
-            self._reason = ""
-            self._abort.clear()
-            self._state = RUNNING
-            self._started_wall = self.robot.wall_now()
-            self._ended_wall = 0.0
-            self._say(f"mission start: {mission['name']} ({len(mission['steps'])} steps, "
-                      f"clock: {mission['clock']})")
+            self._begin(mission, mission_file)
         self._run()
         return self._state
+
+    def update_pending(self, mission):
+        """Live edit: replace every step that has not started yet.
+
+        `mission` is the full edited mission. Steps that already ran, and
+        the one running now, must be unchanged in it; everything after them
+        replaces the remaining plan. Raises RuntimeError with a message for
+        the user when that is not possible."""
+        with self._lock:
+            if self._state != RUNNING:
+                raise RuntimeError("no mission is running - just start the edited one")
+            keep = self._current + 1
+            old = self._mission["steps"]
+            new = mission["steps"]
+            if len(new) < keep:
+                raise RuntimeError("the edit removes steps that already ran")
+            for j in range(keep):
+                if old[j]["raw"] != new[j]["raw"]:
+                    raise RuntimeError(f"step {j + 1} already ran or is running "
+                                       "and cannot be changed any more")
+            self._mission["steps"] = old[:keep] + new[keep:]
+            self._steps = self._steps[:keep] + [self._blank_step(s) for s in new[keep:]]
+            self._say(f"live edit: steps {keep + 1}..{len(new)} updated "
+                      f"({len(new)} steps in total now)")
 
     def abort(self):
         """Ask the running mission to stop at the next check."""
@@ -131,6 +153,8 @@ class MissionEngine:
                 "mission_file": self._mission_file,
                 "clock": self._mission["clock"] if self._mission else None,
                 "started_wall": self._started_wall,
+                "run_id": self._run_id,
+                "current": self._current,
                 "elapsed_s": elapsed,
                 "steps": [dict(s) for s in self._steps],
                 "log": list(self._log),
@@ -155,6 +179,7 @@ class MissionEngine:
             "started_wall": 0.0,
             "ended_wall": 0.0,
             "targets": None,  # arm steps: the 6 target angles
+            "raw": step.get("raw"),
         }
 
     def _now(self):
@@ -189,38 +214,50 @@ class MissionEngine:
 
     def _run(self):
         mission = self._mission
+        i = 0
+        outcome = PASSED
         try:
-            for i, step in enumerate(mission["steps"]):
+            # A while loop instead of for: update_pending() may replace the
+            # steps after the current one while the mission runs.
+            while True:
+                with self._lock:
+                    if i >= len(mission["steps"]):
+                        break
+                    step = mission["steps"][i]
+                    total = len(mission["steps"])
+                    self._current = i
                 if self._abort.is_set():
                     self._skip_rest(i, "aborted")
-                    self._state = ABORTED
+                    outcome = ABORTED
                     self._reason = "mission aborted by the user"
                     break
                 self._set_step(i, status=STEP_RUNNING, started_wall=self.robot.wall_now())
-                self._say(f"step {i + 1}/{len(mission['steps'])} start: {step['name']}")
+                self._say(f"step {i + 1}/{total} start: {step['name']}")
                 ok, detail, duration = self._run_step(i, step)
                 ended = self.robot.wall_now()
                 if isinstance(ok, StepAborted):
                     self._set_step(i, status=STEP_ABORTED, detail=str(ok.args[0]),
                                    ended_wall=ended, duration_s=ended - duration)
                     self._skip_rest(i + 1, "aborted")
-                    self._state = ABORTED
+                    outcome = ABORTED
                     self._reason = f"aborted during step {i + 1} ({step['name']})"
                     break
                 self._set_step(i, status=STEP_PASSED if ok else STEP_FAILED,
                                detail=detail, ended_wall=ended, duration_s=ended - duration)
                 if ok:
-                    self._say(f"step {i + 1}/{len(mission['steps'])} PASS: {detail}", "pass")
+                    self._say(f"step {i + 1}/{total} PASS: {detail}", "pass")
+                    i += 1
                     continue
                 self._skip_rest(i + 1, "skipped after failure")
-                self._state = FAILED
+                outcome = FAILED
                 self._reason = f'step {i + 1} ("{step["name"]}") failed: {detail}'
                 self._say(self._reason, "fail")
                 break
-            else:
-                self._state = PASSED
+            self._state = outcome
+            if outcome == PASSED:
                 self._say(f"mission PASSED: {mission['name']}", "pass")
         except Exception as exc:  # never let the worker thread die silently
+            outcome = FAILED
             self._state = FAILED
             self._reason = f"internal error: {exc}"
             self._say(self._reason, "fail")
@@ -232,7 +269,9 @@ class MissionEngine:
                       "pass" if self._state == PASSED else "fail")
 
     def _skip_rest(self, from_index, status):
-        for j in range(from_index, len(self._steps)):
+        with self._lock:
+            count = len(self._steps)
+        for j in range(from_index, count):
             self._set_step(j, status=SKIPPED if status == "skipped after failure" else status,
                            detail="not started")
 

@@ -10,9 +10,10 @@ will actually use it:
 | [3. ROS 2 on the xArm 6 (arm)](#3-ros-2-on-the-xarm-6-the-arm) | why the arm uses the SDK instead, Studio UI, SDK snippets |
 | [4. The mission dashboard](#4-the-mission-dashboard) | one page that shows robot + arm + mission progress |
 | [5. Run your first mission](#5-run-your-first-mission) | drive 60 s → arm 90° → drive further, with checks |
-| [6. Write your own mission](#6-write-your-own-mission) | the step types and all options |
-| [7. How the checking works](#7-how-the-checking-works) | what "PASS" actually means |
-| [8. Troubleshooting](#8-troubleshooting) | |
+| [6. Edit missions in the step editor](#6-edit-missions-in-the-step-editor) | click a step, choose Avular or xArm, change it, even while it runs |
+| [7. Write missions by hand](#7-write-missions-by-hand) | the step types and all options |
+| [8. How the checking works](#8-how-the-checking-works) | what "PASS" actually means |
+| [9. Troubleshooting](#9-troubleshooting) | |
 
 ## 1. Start the stack
 
@@ -199,7 +200,7 @@ Open <http://localhost:8080>:
 | Panel | What it shows |
 |---|---|
 | **Header** | mission dropdown, Start/Abort, overall state, whether robot + arm are connected, the sim-time factor, links to Gazebo/RViz/Studio |
-| **Mission steps** | every step with live progress and its check result (green = verified, red = failed, rest skipped) |
+| **Step editor** | every step with its device (Avular / xArm), live progress and check result; click a step to edit it (see part 6) |
 | **Origin One** | live position/heading/speed, the driven trajectory on a map (waypoints of the Cerebra map included), button to embed the Gazebo view |
 | **xArm 6** | live joint angles with target markers, a stylized arm sketch that moves with J2/J3, button to embed UFACTORY Studio |
 | **Log** | what the orchestrator did, step by step |
@@ -239,11 +240,44 @@ project description:
 Each step only starts when the previous one **passed** - that is the
 "something that checks it and connects them both".
 
-## 6. Write your own mission
+## 6. Edit missions in the step editor
 
-Mission files live in `Simulation-Docker/orchestrator/missions/`. Create a
+The left panel of the dashboard is a step-by-step editor. It shows the
+mission as a list of numbered steps. Each step has a badge for the device
+that does it (**AVULAR** for the Origin One, **XARM** for the arm,
+**WAIT**) and a one-line summary of what it does.
+
+1. Pick a mission in the dropdown. It loads into the editor.
+2. **Click a step** to open it. Choose who does the step under **Done by**:
+   *Avular Origin One*, *xArm 6* or *Wait*. Then pick the action and fill in
+   the values:
+   - Avular: *Drive for a time* (duration, speed, turn rate, minimum
+     distance check) or *Navigate with Nav2* (Cerebra waypoint or map x/y/yaw).
+   - xArm: *Move joints* (one joint, or several joints where an empty box
+     keeps that joint where it is) or *Home position*, with speed and tolerance.
+3. Use the buttons under a step to move it up or down, duplicate or delete it,
+   or insert a new Avular or xArm step right after it. **Add step** at the
+   bottom adds one at the end.
+4. The editor checks the mission as you type. A problem is shown in red,
+   and the step it belongs to gets a red border.
+5. **Start mission** runs the mission exactly as it is in the editor, even
+   unsaved. **Save** writes it back to its file in `orchestrator/missions/`,
+   **Save as…** writes a new file, and **New** starts an empty mission.
+
+While a mission runs, the same list shows the live status: the running step
+is highlighted and shows progress, passed steps turn green with their check
+result, and steps that already ran or are running get a lock icon. You can
+still open and change any **upcoming** step, or add, delete or reorder
+steps after the current one. The change goes to the running mission within
+a second ("Live: the running mission now uses the edited upcoming steps").
+Locked steps cannot be changed.
+
+## 7. Write missions by hand
+
+Missions are plain YAML files, so you can also write or edit them in a text
+editor. They live in `Simulation-Docker/orchestrator/missions/`. Create a
 new `.yaml` file there and it appears in the dashboard dropdown within a
-second - no rebuild, no restart:
+second, with no rebuild and no restart:
 
 ```yaml
 name: "My first mission"
@@ -303,7 +337,7 @@ Notes:
 - Blind `drive` steps can hit a wall - that is what `min_distance` is for:
   the mission fails honestly instead of pretending.
 
-## 7. How the checking works
+## 8. How the checking works
 
 The orchestrator (`orchestrator/engine.py`) runs one step at a time:
 
@@ -323,7 +357,7 @@ The orchestrator (`orchestrator/engine.py`) runs one step at a time:
 Because of this, "the mission passed" means: **the robot really drove and
 the arm really moved, in the order you asked, verified by measurement.**
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
 - **Dashboard says "NO SERVER"** - `docker compose ps`: is `coffe-orchestrator`
   running? `docker compose logs coffe-orchestrator` for the reason.

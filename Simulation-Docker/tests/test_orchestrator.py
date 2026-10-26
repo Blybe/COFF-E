@@ -403,5 +403,92 @@ class TestEngineSequencing(unittest.TestCase):
         self.assertTrue(any("PASSED" in line["text"] for line in snap["log"]))
 
 
+class TestLiveEdit(unittest.TestCase):
+    """The step editor: upcoming steps can be changed while a mission runs."""
+
+    def _doc(self, *steps):
+        return {"name": "live", "steps": list(steps)}
+
+    def test_upcoming_steps_are_replaced_while_running(self):
+        eng, robot, arm = make_engine()
+        drive = {"type": "drive", "duration": 2, "linear": 0.3}
+        first = mission_model.normalize_mission(self._doc(drive, {"type": "wait", "duration": 1}))
+        edited = mission_model.normalize_mission(self._doc(
+            drive, {"type": "arm_joint", "joint": 2, "angle_deg": 45},
+            {"type": "wait", "duration": 1}))
+        done = []
+
+        def edit_once():
+            if not done:
+                done.append(True)
+                eng.update_pending(edited)
+        robot.hook = edit_once
+        state = eng.run_blocking(first)
+        self.assertEqual(state, engine.PASSED)
+        snap = eng.snapshot()
+        self.assertEqual([s["type"] for s in snap["steps"]], ["drive", "arm_joint", "wait"])
+        self.assertEqual(arm.angles()[1], 45.0)
+        self.assertTrue(any("live edit" in line["text"] for line in snap["log"]))
+
+    def test_running_step_cannot_be_changed(self):
+        eng, robot, _ = make_engine()
+        first = mission_model.normalize_mission(self._doc(
+            {"type": "drive", "duration": 2, "linear": 0.3}))
+        changed = mission_model.normalize_mission(self._doc(
+            {"type": "drive", "duration": 9, "linear": 0.3}))
+        errors = []
+
+        def try_edit():
+            if not errors:
+                try:
+                    eng.update_pending(changed)
+                except RuntimeError as exc:
+                    errors.append(str(exc))
+        robot.hook = try_edit
+        eng.run_blocking(first)
+        self.assertIn("cannot be changed", errors[0])
+        self.assertEqual(eng.snapshot()["state"], engine.PASSED)
+
+    def test_live_edit_needs_a_running_mission(self):
+        eng, _, _ = make_engine()
+        with self.assertRaises(RuntimeError):
+            eng.update_pending(mission(steps=[{"type": "wait", "duration": 1}]))
+
+    def test_snapshot_exposes_raw_steps_and_run_id(self):
+        eng, _, _ = make_engine()
+        raw = {"type": "wait", "duration": 1, "name": "pause"}
+        eng.run_blocking(mission_model.normalize_mission({"name": "x", "steps": [raw]}))
+        snap = eng.snapshot()
+        self.assertEqual(snap["steps"][0]["raw"], raw)
+        self.assertEqual(snap["run_id"], 1)
+        self.assertEqual(snap["current"], 0)
+
+
+class TestSaving(unittest.TestCase):
+    def test_safe_filename(self):
+        self.assertEqual(mission_model.safe_filename("demo"), "demo.yaml")
+        self.assertEqual(mission_model.safe_filename("a_b-1.JSON"), "a_b-1.json")
+        for bad in ("../evil.yaml", "a/b.yaml", "", "x y.yaml"):
+            with self.assertRaises(mission_model.MissionError):
+                mission_model.safe_filename(bad)
+
+    def test_dump_and_read_round_trip(self):
+        doc = {"name": "saved", "steps": [
+            {"name": "drive", "type": "drive", "duration": 5, "linear": 0.2,
+             "check": {"min_distance": 0.5}},
+            {"type": "arm_joint", "angles": [10, None, None, None, None, None]}]}
+        with tempfile.TemporaryDirectory() as folder:
+            for fname in ("m.json", "m.yaml"):
+                if fname.endswith(".yaml"):
+                    try:
+                        import yaml  # noqa: F401
+                    except ImportError:
+                        continue
+                path = os.path.join(folder, fname)
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(mission_model.dump_mission(doc, fname))
+                self.assertEqual(mission_model.read_mission_doc(path), doc)
+                self.assertEqual(len(mission_model.load_mission(path)["steps"]), 2)
+
 if __name__ == "__main__":
     unittest.main()
