@@ -10,7 +10,7 @@ will actually use it:
 | [3. ROS 2 on the xArm 6 (arm)](#3-ros-2-on-the-xarm-6-the-arm) | why the arm uses the SDK instead, Studio UI, SDK snippets |
 | [4. The mission dashboard](#4-the-mission-dashboard) | one page that shows robot + arm + mission progress |
 | [5. Run your first mission](#5-run-your-first-mission) | drive 60 s → arm 90° → drive further, with checks |
-| [6. Edit missions in the step editor](#6-edit-missions-in-the-step-editor) | click a step, choose Avular or xArm, change it, even while it runs |
+| [6. Edit missions in the step editor](#6-edit-missions-in-the-step-editor) | click a step, choose Avular or xArm, change it, even while it runs; live simulator view; sample missions |
 | [7. Write missions by hand](#7-write-missions-by-hand) | the step types and all options |
 | [8. How the checking works](#8-how-the-checking-works) | what "PASS" actually means |
 | [9. Troubleshooting](#9-troubleshooting) | |
@@ -272,6 +272,52 @@ steps after the current one. The change goes to the running mission within
 a second ("Live: the running mission now uses the edited upcoming steps").
 Locked steps cannot be changed.
 
+### Watch it happen live
+
+The **Live simulator view** at the top of the dashboard shows the
+simulators themselves, inside the page:
+
+| Button | Shows |
+|---|---|
+| **Gazebo (robot)** | the Origin One driving through the Cerebra map. The Gazebo camera follows the robot automatically (`GAZEBO_FOLLOW_ROBOT` in `docker-compose.yml`) |
+| **RViz (Nav2 plan)** | the map, the planned path, waypoints and zones; best for `goto` steps |
+| **UFACTORY Studio (arm)** | the xArm 6 in 3D |
+| **Robot + arm side by side** | Gazebo and Studio next to each other |
+
+With **follow the running step** on, the view switches to the simulator of
+the step that is running: Gazebo for `drive`, RViz for `goto`, Studio for
+arm steps. Every step in the editor also has a **👁 watch** button, and
+the **▶ Live view** link in the header jumps to the panel. Each view has an
+**open in a new tab ↗** link if you want it full screen.
+### Sample missions: robot and arm together
+
+The arm will later be mounted **on** the Origin One. These samples show
+ideas for what the two can do together. They are in `orchestrator/missions/`
+and appear in the dropdown. Open one in the step editor and change it.
+
+| File | Idea |
+|---|---|
+| `sample_1_coffee_delivery.yaml` | fold arm in → drive to the table → hand the cup out to the side → wait → fold in → drive back |
+| `sample_2_pick_and_place.yaml` | drive to an object, look down with the wrist camera, pick it up with the mission's own poses, turn, put it down on the left |
+| `sample_3_patrol_inspect.yaml` | drive a square, inspect the floor at each corner with the arm |
+| `sample_4_greeting.yaml` | wave at a visitor (J1 left/right), bow, then turn and drive off |
+| `sample_5_safety_fail.yaml` | **fails on purpose**: tries to drive with the arm reaching out, and the safety rule refuses. Fix it by inserting an *Arm pose: transport* step |
+| `sample_6_nav_serve.yaml` | Nav2 to a serving spot, serve to the left, Nav2 back to the Home waypoint (watch it in RViz) |
+
+They all use two features made for the arm on the robot:
+
+- **Named arm poses** (step type `arm_pose`): `home`, `transport` (folded
+  back over the robot, for driving), `reach_front`, `serve_left`,
+  `serve_right`, `look_down`, `wave_up`. A mission can add its own with
+  `arm_poses:` (see `sample_2_pick_and_place.yaml`). All built-in poses are
+  checked on the simulated xArm. Check them again on the real robot once
+  the arm is mounted, because the robot body and its cargo are not in the
+  arm simulation.
+- **"Only drive with the arm tucked in"** (`require_arm_tucked: true`, the
+  checkbox at the top of the step editor): before every `drive` or `goto`
+  step the engine checks that the arm is within 5° of the `transport` pose.
+  If not, the step fails and the robot does not move.
+
 ## 7. Write missions by hand
 
 Missions are plain YAML files, so you can also write or edit them in a text
@@ -317,6 +363,8 @@ Top-level options:
 | Option | Values | Meaning |
 |---|---|---|
 | `name` | string | shown in the dashboard |
+| `require_arm_tucked` | `true` / `false` (default) | drive/goto steps fail unless the arm is in the `transport` pose |
+| `arm_poses` | `{name: [6 angles]}` | extra named poses for `arm_pose` steps |
 | `clock` | `sim` (default) / `wall` | `sim` = step durations count Gazebo time; `wall` = real time |
 
 Step types and their checks:
@@ -327,6 +375,7 @@ Step types and their checks:
 | `goto` | `waypoint` or `x`/`y`/`yaw` | Nav2 reports the goal reached |
 | `arm_joint` | `joint`+`angle_deg` or `angles` (6 values), `speed`, `check.tolerance_deg` | every commanded joint is within `tolerance_deg` of its target |
 | `arm_home` | `speed` | all six joints within `tolerance_deg` of 0 |
+| `arm_pose` | `pose` (a name), `speed`, `check.tolerance_deg` | all six joints within `tolerance_deg` of the pose |
 | `wait` | `duration` | the time passed |
 
 Notes:

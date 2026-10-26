@@ -36,6 +36,8 @@ import math
 import threading
 import time
 
+import mission_model
+
 IDLE = "idle"
 RUNNING = "running"
 PASSED = "passed"
@@ -131,6 +133,9 @@ class MissionEngine:
                     raise RuntimeError(f"step {j + 1} already ran or is running "
                                        "and cannot be changed any more")
             self._mission["steps"] = old[:keep] + new[keep:]
+            for key in ("require_arm_tucked", "poses", "arm_poses_doc"):
+                if key in mission:
+                    self._mission[key] = mission[key]
             self._steps = self._steps[:keep] + [self._blank_step(s) for s in new[keep:]]
             self._say(f"live edit: steps {keep + 1}..{len(new)} updated "
                       f"({len(new)} steps in total now)")
@@ -152,6 +157,10 @@ class MissionEngine:
                 "mission_name": self._mission["name"] if self._mission else None,
                 "mission_file": self._mission_file,
                 "clock": self._mission["clock"] if self._mission else None,
+                "options": {
+                    "require_arm_tucked": self._mission.get("require_arm_tucked", False),
+                    "arm_poses": self._mission.get("arm_poses_doc") or {},
+                } if self._mission else {},
                 "started_wall": self._started_wall,
                 "run_id": self._run_id,
                 "current": self._current,
@@ -286,12 +295,31 @@ class MissionEngine:
             "goto": self._step_goto,
             "arm_joint": self._step_arm,
             "arm_home": self._step_arm,
+            "arm_pose": self._step_arm,
         }[step["type"]]
         try:
+            if step["type"] in ("drive", "goto") and self._mission.get("require_arm_tucked"):
+                ok, detail = self._check_tucked()
+                if not ok:
+                    return False, detail, started
             ok, detail = runner(i, step, deadline)
             return ok, detail, started
         except StepAborted as exc:
             return exc, str(exc.args[0]), started
+
+    def _check_tucked(self):
+        """Safety rule for the arm mounted on the robot: only drive when the
+        arm is folded into the transport pose."""
+        pose = self._mission.get("poses", mission_model.ARM_POSES)[mission_model.TUCK_POSE]
+        angles = self.arm.angles()
+        if angles is None:
+            return False, "safety: cannot see the arm, so the robot will not drive"
+        gap = max(abs(a - p) for a, p in zip(angles, pose))
+        if gap > mission_model.TUCK_TOLERANCE_DEG:
+            return False, (f"safety: the arm is not tucked in ({gap:.0f} deg away from the "
+                           f"'{mission_model.TUCK_POSE}' pose), so the robot will not drive. "
+                           f"Add an arm_pose 'transport' step before driving.")
+        return True, ""
 
     def _deadline(self, step):
         """Wall-clock deadline for a step. An explicit timeout from the

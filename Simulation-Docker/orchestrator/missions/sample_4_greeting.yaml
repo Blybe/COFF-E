@@ -1,0 +1,19 @@
+# SAMPLE 4 - Greet a visitor
+# The arm waves while the robot stands still, then the robot turns away.
+# A wave is just a few arm_joint steps on J1 (the base rotation) around
+# the "wave_up" pose.
+
+name: "Sample: wave hello, then drive off"
+clock: sim
+require_arm_tucked: true
+
+steps:
+  - {name: "Arm: up high", type: arm_pose, pose: wave_up, speed: 50}
+  - {name: "Wave left", type: arm_joint, joint: 1, angle_deg: 30, speed: 80}
+  - {name: "Wave right", type: arm_joint, joint: 1, angle_deg: -30, speed: 80}
+  - {name: "Wave left", type: arm_joint, joint: 1, angle_deg: 30, speed: 80}
+  - {name: "Back to the middle", type: arm_joint, joint: 1, angle_deg: 0, speed: 80}
+  - {name: "Arm: bow forward", type: arm_pose, pose: reach_front, speed: 40}
+  - {name: "Arm: fold in", type: arm_pose, pose: transport, speed: 40}
+  - {name: "Turn around", type: drive, duration: 6.3, linear: 0.0, angular: 0.5}
+  - {name: "Drive off", type: drive, duration: 5, linear: 0.3, check: {min_distance: 0.5}}

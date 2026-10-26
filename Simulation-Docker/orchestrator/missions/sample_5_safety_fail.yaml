@@ -1,0 +1,15 @@
+# SAMPLE 5 - The safety rule in action (this mission FAILS on purpose)
+# With require_arm_tucked the robot never drives while the arm sticks out.
+# Step 2 forgets to fold the arm in, so step 3 is refused and the mission
+# stops. Fix it in the step editor: insert an "Arm pose: transport" step
+# after step 2 and start again.
+
+name: "Sample: safety check - drive with the arm out (fails)"
+clock: sim
+require_arm_tucked: true
+
+steps:
+  - {name: "Arm: reach out in front", type: arm_pose, pose: reach_front, speed: 40}
+  - {name: "Wait a moment", type: wait, duration: 2}
+  - {name: "Drive forward (refused: arm is not tucked in)", type: drive, duration: 5, linear: 0.3, check: {min_distance: 0.5}}
+  - {name: "Arm: home", type: arm_home, speed: 40}

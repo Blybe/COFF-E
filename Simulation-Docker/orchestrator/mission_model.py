@@ -18,7 +18,16 @@ Step types:
   arm_joint  move the xArm 6 to <angles> (6 values in degrees) or a single
              <joint> to <angle_deg>, then check the reached angles
   arm_home   shortcut for arm_joint with all joints at 0 degrees
+  arm_pose   move the xArm 6 to a named pose (see ARM_POSES, or the
+             mission's own arm_poses), e.g. "transport" before driving
   wait       do nothing for <duration> seconds
+
+Mission options for the arm mounted on the robot:
+
+  arm_poses:           {name: [6 angles]} - extra or changed named poses
+  require_arm_tucked:  true - every drive/goto step first checks that the
+                       arm is in the "transport" pose, and fails otherwise
+                       (never drive around with the arm sticking out)
 
 Example:
 
@@ -44,9 +53,34 @@ import json
 import os
 import re
 
-STEP_TYPES = ("drive", "goto", "arm_joint", "arm_home", "wait")
+STEP_TYPES = ("drive", "goto", "arm_joint", "arm_home", "arm_pose", "wait")
 
 ARM_JOINTS = 6  # xArm 6
+
+# Named xArm 6 joint poses (degrees, J1..J6), all checked on the simulated
+# arm. J1 turns the whole arm around its base, so with the arm mounted on the
+# Origin One, J1 = 0 points forward and +/-90 to the sides.
+ARM_POSES = {
+    "home": [0, 0, 0, 0, 0, 0],             # straight up
+    "transport": [0, -45, -30, 0, 75, 0],   # folded back over the robot, for driving
+    "reach_front": [0, 30, -40, 0, 10, 0],  # reach out in front (serve / pick)
+    "serve_left": [90, 20, -50, 0, 30, 0],  # hand something to the left side
+    "serve_right": [-90, 20, -50, 0, 30, 0],
+    "look_down": [0, 10, -90, 0, 80, 0],    # wrist camera looking at the floor
+    "wave_up": [0, -20, -120, 0, 40, 0],    # high up, for waving / showing
+}
+# Shown next to the pose names in the dashboard step editor.
+ARM_POSE_INFO = {
+    "home": "straight up",
+    "transport": "folded back over the robot - the only pose to drive in",
+    "reach_front": "reach out in front of the robot (serve / pick up)",
+    "serve_left": "turned to the left side, arm out",
+    "serve_right": "turned to the right side, arm out",
+    "look_down": "wrist (camera) pointing at the floor in front",
+    "wave_up": "high up, to wave or show something",
+}
+TUCK_POSE = "transport"
+TUCK_TOLERANCE_DEG = 5.0
 
 
 class MissionError(ValueError):
@@ -72,15 +106,15 @@ def _check_unknown_keys(step, known, ctx):
         raise MissionError(f"{ctx}: unknown option(s) {', '.join(unknown)}")
 
 
-def _normalize_step(raw, index):
-    step = _normalize_step_fields(raw, index)
+def _normalize_step(raw, index, poses=None):
+    step = _normalize_step_fields(raw, index, poses if poses is not None else ARM_POSES)
     # The step exactly as written, so the dashboard editor can show and edit
     # it, and live edits can tell which steps were left unchanged.
     step["raw"] = copy.deepcopy(raw)
     return step
 
 
-def _normalize_step_fields(raw, index):
+def _normalize_step_fields(raw, index, poses):
     if not isinstance(raw, dict):
         raise MissionError(f"step {index + 1}: must be a mapping, got {type(raw).__name__}")
 
@@ -134,10 +168,12 @@ def _normalize_step_fields(raw, index):
                 raise MissionError(f"{ctx}: goto needs either a waypoint or x and y")
             step["yaw"] = _number(raw.get("yaw", 0.0), "yaw", ctx)
 
-    elif stype in ("arm_joint", "arm_home"):
+    elif stype in ("arm_joint", "arm_home", "arm_pose"):
         _check_unknown_keys(
             raw, ("type", "name", "timeout", "angles", "joint", "angle_deg", "speed",
-                  "check"), ctx)
+                  "check", "pose"), ctx)
+        if stype != "arm_pose" and raw.get("pose") is not None:
+            raise MissionError(f"{ctx}: pose only belongs to an arm_pose step")
         step["speed"] = _number(raw.get("speed", 30), "speed", ctx)
         if step["speed"] <= 0:
             raise MissionError(f"{ctx}: speed must be > 0")
@@ -153,6 +189,14 @@ def _normalize_step_fields(raw, index):
             if raw.get("angles") is not None or raw.get("joint") is not None:
                 raise MissionError(f"{ctx}: arm_home takes no angles (it goes to all-zero)")
             step["angles"] = [0.0] * ARM_JOINTS
+        elif stype == "arm_pose":
+            if raw.get("angles") is not None or raw.get("joint") is not None:
+                raise MissionError(f"{ctx}: arm_pose takes a pose name, not angles")
+            pose = raw.get("pose")
+            if pose not in poses:
+                raise MissionError(f"{ctx}: pose must be one of {', '.join(poses)}, got {pose!r}")
+            step["pose"] = pose
+            step["angles"] = [float(a) for a in poses[pose]]
         else:
             angles = raw.get("angles")
             joint = raw.get("joint")
@@ -187,9 +231,21 @@ def normalize_mission(data, origin="mission"):
     """Validate a parsed mission document and fill in all defaults."""
     if not isinstance(data, dict):
         raise MissionError(f"{origin}: must be a mapping with 'name' and 'steps'")
-    unknown = sorted(set(data) - {"name", "clock", "steps"})
+    unknown = sorted(set(data) - {"name", "clock", "steps", "arm_poses", "require_arm_tucked"})
     if unknown:
         raise MissionError(f"{origin}: unknown option(s) {', '.join(unknown)}")
+    poses = dict(ARM_POSES)
+    extra = data.get("arm_poses") or {}
+    if not isinstance(extra, dict):
+        raise MissionError(f"{origin}: arm_poses must be a mapping of name: [6 angles]")
+    for pname, angles in extra.items():
+        if (not isinstance(angles, (list, tuple)) or len(angles) != ARM_JOINTS
+                or any(isinstance(a, bool) or not isinstance(a, (int, float)) for a in angles)):
+            raise MissionError(f"{origin}: arm_poses.{pname} must be {ARM_JOINTS} numbers (degrees)")
+        poses[str(pname)] = [float(a) for a in angles]
+    tucked = data.get("require_arm_tucked", False)
+    if not isinstance(tucked, bool):
+        raise MissionError(f"{origin}: require_arm_tucked must be true or false")
     clock = data.get("clock", "sim")
     if clock not in ("sim", "wall"):
         raise MissionError(f"{origin}: clock must be 'sim' or 'wall', got {clock!r}")
@@ -202,7 +258,10 @@ def normalize_mission(data, origin="mission"):
     return {
         "name": str(data.get("name") or "unnamed mission"),
         "clock": clock,
-        "steps": [_normalize_step(raw, i) for i, raw in enumerate(raw_steps)],
+        "require_arm_tucked": tucked,
+        "poses": poses,
+        "arm_poses_doc": copy.deepcopy(extra),  # as written, for the editor
+        "steps": [_normalize_step(raw, i, poses) for i, raw in enumerate(raw_steps)],
     }
 
 
@@ -233,6 +292,10 @@ def clean_doc(doc):
     out = {"name": doc.get("name") or "unnamed mission"}
     if doc.get("clock", "sim") != "sim":
         out["clock"] = doc["clock"]
+    if doc.get("require_arm_tucked"):
+        out["require_arm_tucked"] = doc["require_arm_tucked"]
+    if doc.get("arm_poses"):
+        out["arm_poses"] = doc["arm_poses"]
     out["steps"] = doc.get("steps") or []
     return out
 

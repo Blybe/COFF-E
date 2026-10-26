@@ -74,6 +74,9 @@ def status():
         "robot": robot.snapshot(),
         "arm": arm.snapshot(),
         "missions": mission_model.list_missions(MISSIONS_DIR),
+        "arm_poses": mission_model.ARM_POSES,
+        "arm_pose_info": mission_model.ARM_POSE_INFO,
+        "tuck_pose": mission_model.TUCK_POSE,
     })
 
 

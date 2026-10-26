@@ -1,0 +1,67 @@
+# SAMPLE 2 - Pick something up and put it down somewhere else
+# Shows the mission's own named poses (arm_poses): poses for this job only,
+# next to the built-in ones (home, transport, reach_front, serve_left, ...).
+# With a gripper later, "close gripper" / "open gripper" steps go after the
+# pick and place poses.
+
+name: "Sample: pick up and place an object"
+clock: sim
+require_arm_tucked: true
+arm_poses:
+  above_object: [0, 35, -55, 0, 20, 0]   # hovering over the object in front
+  grab: [0, 50, -60, 0, 10, 0]           # down at the object
+  drop_left: [90, 35, -55, 0, 20, 0]     # over a tray on the left side
+
+steps:
+  - name: "Arm: fold in for driving"
+    type: arm_pose
+    pose: transport
+    speed: 40
+
+  - name: "Drive to the object"
+    type: drive
+    duration: 6
+    linear: 0.3
+    check: {min_distance: 0.5}
+
+  - name: "Arm: camera looks at the floor (find the object)"
+    type: arm_pose
+    pose: look_down
+    speed: 40
+
+  - name: "Arm: move above the object"
+    type: arm_pose
+    pose: above_object
+    speed: 30
+
+  - name: "Arm: go down and grab"
+    type: arm_pose
+    pose: grab
+    speed: 15            # slow near the object
+    check: {tolerance_deg: 4}
+
+  - name: "Arm: lift it up again"
+    type: arm_pose
+    pose: above_object
+    speed: 15
+
+  - name: "Arm: carry position"
+    type: arm_pose
+    pose: transport
+    speed: 30
+
+  - name: "Turn left a quarter turn"
+    type: drive
+    duration: 3.2
+    linear: 0.0
+    angular: 0.5         # 0.5 rad/s x 3.2 s = about 90 degrees
+
+  - name: "Arm: put it down on the left"
+    type: arm_pose
+    pose: drop_left
+    speed: 20
+
+  - name: "Arm: fold in again"
+    type: arm_pose
+    pose: transport
+    speed: 40

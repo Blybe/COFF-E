@@ -1,0 +1,21 @@
+# SAMPLE 6 - Navigate with Nav2, serve, and come back
+# Nav2 plans a route around walls and no-go zones on the Cerebra map, so
+# this is how the real robot will get to a table. Watch the plan in the
+# RViz live view. Goals are map coordinates or Cerebra waypoint names.
+# Nav2 is slow when the sim runs far below real time - be patient.
+# Start it with the robot at Home (restart avular-origin-sim + origin-nav
+# after the drive samples). Home is in a narrow corridor, so the serving
+# spot is in an open area where Nav2 has room, and the robot arrives
+# already facing back towards Home.
+
+name: "Sample: Nav2 to a spot, serve, Nav2 back Home"
+clock: sim
+require_arm_tucked: true
+
+steps:
+  - {name: "Arm: fold in", type: arm_pose, pose: transport, speed: 40}
+  - {name: "Nav2: go to the serving spot", type: goto, x: 7.25, y: -2.75, yaw: 3.14}
+  - {name: "Arm: serve to the left", type: arm_pose, pose: serve_left, speed: 30}
+  - {name: "Wait for the customer", type: wait, duration: 4}
+  - {name: "Arm: fold in", type: arm_pose, pose: transport, speed: 40}
+  - {name: "Nav2: back to the Home waypoint", type: goto, waypoint: Home}

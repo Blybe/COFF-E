@@ -17,7 +17,9 @@ Linux. Nothing ROS-related needs to be installed on the host.
 **New here?** Follow [MISSION_GUIDE.md](MISSION_GUIDE.md): a step-by-step
 guide to ROS 2 on the Origin One, the xArm SDK, and running missions such as
 "drive 60 s → arm 90° → drive further" from the dashboard. Mission files live
-in `orchestrator/missions/`, and the orchestrator unit tests run with
+in `orchestrator/missions/` (including `sample_*.yaml` ideas for the arm
+mounted on the robot); the dashboard also shows Gazebo, RViz and UFACTORY
+Studio live. The orchestrator unit tests run with
 `py -m unittest tests/test_orchestrator.py`.
 
 ## Folder contents

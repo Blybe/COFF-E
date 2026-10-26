@@ -490,5 +490,66 @@ class TestSaving(unittest.TestCase):
                 self.assertEqual(mission_model.read_mission_doc(path), doc)
                 self.assertEqual(len(mission_model.load_mission(path)["steps"]), 2)
 
+
+class TestArmOnRobot(unittest.TestCase):
+    """Named arm poses and the 'only drive with the arm tucked in' rule."""
+
+    def test_arm_pose_uses_named_angles(self):
+        m = mission(steps=[{"type": "arm_pose", "pose": "transport"}])
+        self.assertEqual(m["steps"][0]["angles"], mission_model.ARM_POSES["transport"])
+
+    def test_unknown_pose_rejected(self):
+        with self.assertRaises(mission_model.MissionError):
+            mission(steps=[{"type": "arm_pose", "pose": "dance"}])
+
+    def test_mission_own_poses(self):
+        m = mission_model.normalize_mission({"name": "x", "arm_poses": {"grab": [0, 50, -60, 0, 10, 0]},
+                                             "steps": [{"type": "arm_pose", "pose": "grab"}]})
+        self.assertEqual(m["steps"][0]["angles"], [0, 50, -60, 0, 10, 0])
+        with self.assertRaises(mission_model.MissionError):
+            mission_model.normalize_mission({"name": "x", "arm_poses": {"bad": [1, 2]},
+                                             "steps": [{"type": "wait", "duration": 1}]})
+
+    def test_drive_refused_when_arm_not_tucked(self):
+        eng, robot, _ = make_engine()
+        m = mission_model.normalize_mission({"name": "x", "require_arm_tucked": True, "steps": [
+            {"type": "drive", "duration": 2, "linear": 0.3},
+            {"type": "wait", "duration": 1}]})
+        self.assertEqual(eng.run_blocking(m), engine.FAILED)
+        snap = eng.snapshot()
+        self.assertIn("not tucked", snap["steps"][0]["detail"])
+        self.assertEqual(snap["steps"][1]["status"], engine.SKIPPED)
+        self.assertNotIn((0.3, 0.0), robot.cmds)  # never drove
+
+    def test_drive_allowed_after_transport_pose(self):
+        eng, robot, arm = make_engine()
+        m = mission_model.normalize_mission({"name": "x", "require_arm_tucked": True, "steps": [
+            {"type": "arm_pose", "pose": "transport", "check": {"tolerance_deg": 0.5}},
+            {"type": "drive", "duration": 2, "linear": 0.3, "check": {"min_distance": 0.3}}]})
+        self.assertEqual(eng.run_blocking(m), engine.PASSED)
+        self.assertIn((0.3, 0.0), robot.cmds)
+
+    def test_without_rule_drive_ignores_arm(self):
+        eng, _, _ = make_engine()
+        self.assertEqual(eng.run_blocking(mission(steps=[
+            {"type": "drive", "duration": 2, "linear": 0.3}])), engine.PASSED)
+
+    def test_sample_missions_are_valid(self):
+        try:
+            import yaml  # noqa: F401
+        except ImportError:
+            self.skipTest("PyYAML not installed on this machine")
+        folder = os.path.join(ORCH, "missions")
+        listed = mission_model.list_missions(folder)
+        self.assertGreaterEqual(len([e for e in listed if e["file"].startswith("sample_")]), 6)
+        for entry in listed:
+            self.assertIsNone(entry["error"], entry["file"])
+
+    def test_options_survive_save(self):
+        doc = {"name": "x", "require_arm_tucked": True, "arm_poses": {"p": [1, 2, 3, 4, 5, 6]},
+               "steps": [{"type": "arm_pose", "pose": "p"}]}
+        self.assertEqual(json.loads(mission_model.dump_mission(doc, "m.json")), doc)
+
+
 if __name__ == "__main__":
     unittest.main()

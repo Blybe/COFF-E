@@ -50,8 +50,8 @@
   main {
     flex: 1; display: grid; gap: 12px; padding: 12px; overflow: auto;
     grid-template-columns: 430px minmax(360px, 1fr) minmax(320px, 1fr);
-    grid-template-rows: auto auto 190px;
-    grid-template-areas: "steps robot arm" "steps robot arm" "log log log";
+    grid-template-rows: auto auto auto 190px;
+    grid-template-areas: "steps view view" "steps robot arm" "steps robot arm" "log log log";
   }
   /* No overflow:hidden here: on a grid item it drops the automatic minimum
      height to 0, and the grid then squeezes panels below their content. */
@@ -61,6 +61,28 @@
   #robot-panel { grid-area: robot; }
   #arm-panel { grid-area: arm; }
   #log-panel { grid-area: log; }
+  #view-panel { grid-area: view; }
+
+  /* live simulator view */
+  .vbar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .vbar button { padding: 4px 10px; font-size: 12px; }
+  .vbar button.on { border-color: var(--accent); background: #10314e; color: #cfe6ff; }
+  .vbar a { color: var(--accent); font-size: 12px; text-decoration: none; }
+  .vbar a:hover { text-decoration: underline; }
+  .vbar label { display: inline-flex; gap: 5px; align-items: center; font-size: 12px; color: var(--dim); }
+  .vbar label input { width: auto; }
+  #view-frames { display: grid; gap: 8px; margin-top: 8px; grid-template-columns: 1fr; }
+  #view-frames.split { grid-template-columns: 1fr 1fr; }
+  #view-frames:empty { display: none; }
+  .vf { display: flex; flex-direction: column; gap: 3px; }
+  .vf .vt { font-size: 11px; color: var(--dim); display: flex; justify-content: space-between; }
+  .vf iframe { width: 100%; height: 420px; border: 1px solid var(--line); border-radius: 8px; background: #0b0e12; }
+  #view-frames.split .vf iframe { height: 340px; }
+  #view-note { font-size: 12px; }
+  .step .watch { font-size: 11px; padding: 0 6px; border-radius: 4px; flex: 0 0 auto; }
+  .opts { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--dim); margin-bottom: 6px; }
+  .opts input { width: auto; }
+  .poseinfo { font-size: 11px; color: var(--dim); margin-left: 128px; margin-top: -2px; }
 
   /* steps */
   #steps { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
@@ -152,11 +174,13 @@
   .addbar { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; align-items: center; }
   .addbar button { padding: 4px 10px; font-size: 12px; }
   @media (max-width: 1150px) {
-    main { grid-template-columns: 1fr 1fr; grid-template-areas: "steps robot" "steps arm" "log log"; }
+    main { grid-template-columns: 1fr 1fr; grid-template-rows: auto auto auto 190px;
+           grid-template-areas: "view view" "steps robot" "steps arm" "log log"; }
   }
   @media (max-width: 780px) {
     main { grid-template-columns: 1fr; grid-template-rows: none; grid-auto-rows: auto;
-           grid-template-areas: "steps" "robot" "arm" "log"; }
+           grid-template-areas: "view" "steps" "robot" "arm" "log"; }
+    #view-frames.split { grid-template-columns: 1fr; }
     #log-panel { height: 220px; }
   }
 </style>
@@ -179,7 +203,7 @@
     </span>
     <span class="chip" id="sim-chip" title="Gazebo sim time vs real time (0.5 = the sim runs at half speed)">sim —</span>
     <span class="chip" id="map-chip" title="Loaded Cerebra map"></span>
-    <span class="chip">views:
+    <span class="chip"><a href="#view-panel" id="live-link" title="Show the simulators live, inside this page">▶ Live view</a> · open in a tab:
       <a href="http://localhost:6080/vnc.html?autoconnect=true&resize=scale" target="_blank">Gazebo</a>
       <a href="http://localhost:6081/vnc.html?autoconnect=true&resize=scale" target="_blank">RViz</a>
       <a href="http://localhost:18333" target="_blank">UFACTORY Studio</a>
@@ -197,14 +221,31 @@
       <button id="ed-new">New</button>
     </div>
     <div id="ed-file" class="muted"></div>
+    <label class="opts" title="For the arm mounted on the Origin One: every Avular step first checks that the arm is folded into the transport pose, and fails otherwise">
+      <input type="checkbox" id="ed-tucked"> Arm on the robot: only drive with the arm tucked in (transport pose)</label>
     <div id="ed-banner"></div>
     <div id="reason"></div>
     <div id="steps"></div>
     <div class="addbar"><span class="muted">Add step:</span>
       <button data-add="avular">+ Avular Origin One</button>
       <button data-add="xarm">+ xArm 6</button>
+      <button data-add="pose">+ Arm pose</button>
       <button data-add="wait">+ Wait</button>
     </div>
+  </section>
+
+  <section class="panel" id="view-panel">
+    <h2>Live simulator view</h2>
+    <div class="vbar">
+      <button data-view="gazebo" title="Gazebo: the Origin One driving in the Cerebra map">Gazebo (robot)</button>
+      <button data-view="rviz" title="RViz: Nav2 map, planned path, waypoints and zones">RViz (Nav2 plan)</button>
+      <button data-view="studio" title="UFACTORY Studio: the simulated xArm 6 in 3D">UFACTORY Studio (arm)</button>
+      <button data-view="both" title="Gazebo and UFACTORY Studio next to each other">Robot + arm side by side</button>
+      <button data-view="off">Hide</button>
+      <label title="Switch the view to the simulator of the step that is running"><input type="checkbox" id="view-follow" checked> follow the running step</label>
+      <span id="view-note" class="muted"></span>
+    </div>
+    <div id="view-frames"></div>
   </section>
 
   <section class="panel" id="robot-panel">
@@ -212,10 +253,8 @@
     <div class="kv" id="robot-kv"></div>
     <canvas id="traj-canvas"></canvas>
     <div class="views">
-      <button id="btn-gazebo">Show Gazebo view</button>
       <span class="muted" id="traj-note" style="align-self:center"></span>
     </div>
-    <div id="gazebo-frame" class="views"></div>
   </section>
 
   <section class="panel" id="arm-panel">
@@ -223,10 +262,8 @@
     <div class="joints" id="joints"></div>
     <canvas id="arm-canvas" title="Stylized side view: J2 (shoulder) and J3 (elbow)"></canvas>
     <div class="views">
-      <button id="btn-studio">Show UFACTORY Studio view</button>
       <span class="muted" style="align-self:center">J1 is the base rotation, the sketch shows J2/J3</span>
     </div>
-    <div id="studio-frame" class="views"></div>
   </section>
 
   <section class="panel" id="log-panel">
@@ -318,15 +355,24 @@ function renderReason(mission) {
 // The editor holds the mission as written in the file (raw steps). While a
 // mission started from here runs, the editor and the engine use the same
 // step indexes, so the live status is drawn straight onto the edited steps.
-const DEVICE_TYPES = { avular: ["drive", "goto"], xarm: ["arm_joint", "arm_home"], wait: ["wait"] };
+const DEVICE_TYPES = { avular: ["drive", "goto"], xarm: ["arm_joint", "arm_pose", "arm_home"], wait: ["wait"] };
 const DEVICE_NAME = { avular: "Avular Origin One", xarm: "xArm 6", wait: "Wait" };
 const DEVICE_BADGE = { avular: "AVULAR", xarm: "XARM", wait: "WAIT" };
-const TYPE_LABEL = { drive: "Drive for a time", goto: "Navigate with Nav2", arm_joint: "Move joints", arm_home: "Home position", wait: "Wait" };
+const TYPE_LABEL = { drive: "Drive for a time", goto: "Navigate with Nav2", arm_joint: "Move joints", arm_pose: "Named pose (transport, serve, ...)", arm_home: "Home position", wait: "Wait" };
 const ed = { doc: null, file: "", saved: "", open: -1, runId: null, error: "", errStep: -1, liveMsg: "", renderedLock: -2, loading: false };
 let validateTimer = null;
 
 function deviceOf(type) { return type === "wait" ? "wait" : String(type).startsWith("arm") ? "xarm" : "avular"; }
 function dirty() { return ed.doc && JSON.stringify(ed.doc) !== ed.saved; }
+function poseNames() {
+  return Object.keys(Object.assign({}, (latest && latest.arm_poses) || { transport: 1 }, (ed.doc && ed.doc.arm_poses) || {}));
+}
+function poseInfo(name) {
+  if (ed.doc && ed.doc.arm_poses && ed.doc.arm_poses[name]) return "this mission's own pose: " + ed.doc.arm_poses[name].join("°, ") + "°";
+  const info = (latest && latest.arm_pose_info) || {};
+  const angles = latest && latest.arm_poses && latest.arm_poses[name];
+  return (info[name] || "") + (angles ? ` (${angles.join("°, ")}°)` : "");
+}
 function waypointNames() { return ((latest && latest.robot.waypoints) || []).map(w => w.name); }
 
 function linkedRunning() {
@@ -341,6 +387,7 @@ function defaultStep(type) {
     case "goto": return { name: "Navigate to a waypoint", type, waypoint: waypointNames()[0] || "Home" };
     case "arm_joint": return { name: "Arm: joint 1 to 90 degrees", type, joint: 1, angle_deg: 90, speed: 30, check: { tolerance_deg: 3 } };
     case "arm_home": return { name: "Arm: back to home", type, speed: 30 };
+    case "arm_pose": return { name: "Arm: fold into the transport pose", type, pose: "transport", speed: 40 };
     default: return { name: "Wait 5 s", type: "wait", duration: 5 };
   }
 }
@@ -365,6 +412,7 @@ function summary(s) {
       return `${what || "no joints set"} at ${s.speed ?? 30}°/s · check: ±${tol}°`;
     }
     case "arm_home": return `all joints to 0° at ${s.speed ?? 30}°/s`;
+    case "arm_pose": return `pose "${s.pose}" at ${s.speed ?? 30}°/s · check: ±${(s.check && s.check.tolerance_deg) ?? 3}°`;
     case "wait": return `wait ${n(s.duration)} s`;
   }
   return String(s.type);
@@ -435,6 +483,16 @@ function stepForm(s, i, lock) {
       h += num("Check: tolerance", "check.tolerance_deg", chk.tolerance_deg, "°", dis, "3");
       break;
     }
+    case "arm_pose": {
+      const names = poseNames();
+      if (!names.includes(s.pose)) names.push(s.pose);
+      h += `<label>Pose<select data-path="pose" data-kind="str" ${dis}>` + names.map(n =>
+        `<option ${n === s.pose ? "selected" : ""}>${escapeHtml(n)}</option>`).join("") + `</select></label>`;
+      h += `<div class="poseinfo">${escapeHtml(poseInfo(s.pose))}</div>`;
+      h += num("Speed", "speed", s.speed, "°/s", dis);
+      h += num("Check: tolerance", "check.tolerance_deg", chk.tolerance_deg, "°", dis, "3");
+      break;
+    }
     case "arm_home":
       h += num("Speed", "speed", s.speed, "°/s", dis);
       h += num("Check: tolerance", "check.tolerance_deg", chk.tolerance_deg, "°", dis, "3");
@@ -464,6 +522,7 @@ function renderEditor() {
   const keep = a && a.dataset && a.dataset.path && a.closest(".step")
     ? { i: a.closest(".step").dataset.i, p: a.dataset.path, s: a.selectionStart } : null;
   if (document.activeElement !== $("ed-name")) $("ed-name").value = ed.doc ? ed.doc.name || "" : "";
+  $("ed-tucked").checked = !!(ed.doc && ed.doc.require_arm_tucked);
   const lock = lockedUpTo();
   ed.renderedLock = lock;
   if (!ed.doc) { box.innerHTML = `<div class="muted">No mission loaded.</div>`; return; }
@@ -475,6 +534,7 @@ function renderEditor() {
           <div class="idx">${i + 1}</div>
           <span class="badge ${dev}">${DEVICE_BADGE[dev]}</span>
           <div class="name">${escapeHtml(s.name || s.type)}</div>
+          ${simForStep(s) ? `<button class="watch" data-act="watch" title="Watch this step live in the simulator">👁 watch</button>` : ""}
           <div class="icon" id="si${i}">·</div>
         </div>
         <div class="sum">${escapeHtml(summary(s))}</div>
@@ -503,6 +563,9 @@ function refreshHead(i) {
 function adoptRun(m) {
   ed.doc = { name: m.mission_name, steps: m.steps.map(s => s.raw) };
   if (m.clock && m.clock !== "sim") ed.doc.clock = m.clock;
+  const o = m.options || {};
+  if (o.require_arm_tucked) ed.doc.require_arm_tucked = true;
+  if (o.arm_poses && Object.keys(o.arm_poses).length) ed.doc.arm_poses = o.arm_poses;
   ed.file = /\.(ya?ml|json)$/i.test(m.mission_file || "") ? m.mission_file : "";
   ed.saved = ed.file ? JSON.stringify(ed.doc) : "";
   ed.runId = m.run_id; ed.open = -1; ed.error = ""; ed.errStep = -1;
@@ -618,6 +681,7 @@ function stepAction(act, i) {
   const steps = ed.doc.steps;
   const s = steps[i];
   if (act === "close") { ed.open = -1; renderEditor(); return; }
+  if (act === "watch") { watchStep(i); return; }
   if (act === "up") { [steps[i - 1], steps[i]] = [steps[i], steps[i - 1]]; ed.open = i - 1; }
   else if (act === "down") { [steps[i + 1], steps[i]] = [steps[i], steps[i + 1]]; ed.open = i + 1; }
   else if (act === "dup") return insertStep(i + 1, JSON.parse(JSON.stringify(s)));
@@ -670,7 +734,7 @@ $("steps").addEventListener("change", (e) => {
   if (!stepEl) return;
   const i = Number(stepEl.dataset.i);
   if (el.tagName === "SELECT" && el.dataset.act) { stepAction(el.dataset.act, i); return; }
-  if (el.tagName === "SELECT" && el.dataset.path) { setPath(ed.doc.steps[i], el.dataset.path, readValue(el)); changed(false); }
+  if (el.tagName === "SELECT" && el.dataset.path) { setPath(ed.doc.steps[i], el.dataset.path, readValue(el)); changed(el.dataset.path === "pose"); }
 });
 $("steps").addEventListener("input", (e) => {
   const el = e.target;
@@ -680,9 +744,15 @@ $("steps").addEventListener("input", (e) => {
   changed(false);
 });
 $("ed-name").addEventListener("input", (e) => { if (ed.doc) { ed.doc.name = e.target.value; changed(false); } });
+$("ed-tucked").addEventListener("change", (e) => {
+  if (!ed.doc) return;
+  if (e.target.checked) ed.doc.require_arm_tucked = true; else delete ed.doc.require_arm_tucked;
+  changed(false);
+});
 document.querySelectorAll("[data-add]").forEach(b => b.addEventListener("click", () => {
   if (!ed.doc) return;
-  insertStep(ed.doc.steps.length, defaultStep(DEVICE_TYPES[b.dataset.add][0]));
+  const type = b.dataset.add === "pose" ? "arm_pose" : DEVICE_TYPES[b.dataset.add][0];
+  insertStep(ed.doc.steps.length, defaultStep(type));
 }));
 
 async function loadMission(file) {
@@ -693,6 +763,8 @@ async function loadMission(file) {
     if (r.error) { flash(r.error); return; }
     ed.doc = { name: r.doc.name || file, steps: Array.isArray(r.doc.steps) ? r.doc.steps : [] };
     if (r.doc.clock) ed.doc.clock = r.doc.clock;
+    if (r.doc.require_arm_tucked) ed.doc.require_arm_tucked = r.doc.require_arm_tucked;
+    if (r.doc.arm_poses) ed.doc.arm_poses = r.doc.arm_poses;
     ed.file = file; ed.saved = JSON.stringify(ed.doc);
     ed.open = -1; ed.runId = null; ed.error = ""; ed.errStep = -1; ed.liveMsg = "";
     renderEditor();
@@ -935,6 +1007,7 @@ async function poll() {
     if (linkedRunning() || ed.liveMsg === "") renderBanner();
     renderRobot(st);
     renderArm(st);
+    followView(st);
     renderLog(st.mission);
   } catch (err) {
     $("state").textContent = "NO SERVER";
@@ -961,18 +1034,69 @@ $("mission-select").addEventListener("change", (e) => {
   loadMission(e.target.value);
 });
 
-$("btn-gazebo").addEventListener("click", () => {
-  const box = $("gazebo-frame");
-  if (box.dataset.on) { box.innerHTML = ""; delete box.dataset.on; $("btn-gazebo").textContent = "Show Gazebo view"; return; }
-  box.innerHTML = `<iframe src="http://localhost:6080/vnc.html?autoconnect=true&resize=scale"></iframe>`;
-  box.dataset.on = "1"; $("btn-gazebo").textContent = "Hide Gazebo view";
-});
-$("btn-studio").addEventListener("click", () => {
-  const box = $("studio-frame");
-  if (box.dataset.on) { box.innerHTML = ""; delete box.dataset.on; $("btn-studio").textContent = "Show UFACTORY Studio view"; return; }
-  box.innerHTML = `<iframe src="http://localhost:18333"></iframe>`;
-  box.dataset.on = "1"; $("btn-studio").textContent = "Hide UFACTORY Studio view";
-});
+/* ------------------------------------------------------------ live view */
+// The simulators stream their own web UIs (noVNC for Gazebo / RViz, the
+// UFACTORY Studio web app). Each iframe is created once and then only
+// hidden, so switching views does not reconnect the VNC stream.
+const SIMS = {
+  gazebo: { title: "Gazebo - Avular Origin One", url: `http://${location.hostname}:6080/vnc.html?autoconnect=true&resize=scale` },
+  rviz: { title: "RViz - Nav2 path planning", url: `http://${location.hostname}:6081/vnc.html?autoconnect=true&resize=scale` },
+  studio: { title: "UFACTORY Studio - xArm 6", url: `http://${location.hostname}:18333` },
+};
+const view = { mode: localStorage.getItem("view") || "off", followed: -1 };
+
+function simForStep(raw) {
+  if (!raw) return null;
+  if (raw.type === "goto") return "rviz";
+  if (raw.type === "drive") return "gazebo";
+  if (String(raw.type).startsWith("arm")) return "studio";
+  return null;
+}
+
+function setView(mode, why) {
+  view.mode = mode;
+  localStorage.setItem("view", mode);
+  const box = $("view-frames");
+  const show = mode === "off" ? [] : mode === "both" ? ["gazebo", "studio"] : [mode];
+  for (const key of Object.keys(SIMS)) {
+    let el = $("vf-" + key);
+    if (!show.includes(key)) { if (el) el.style.display = "none"; continue; }
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "vf"; el.id = "vf-" + key;
+      el.innerHTML = `<div class="vt"><span>${SIMS[key].title}</span>
+        <a href="${SIMS[key].url}" target="_blank" style="color:var(--accent)">open in a new tab ↗</a></div>
+        <iframe src="${SIMS[key].url}" title="${SIMS[key].title}"></iframe>`;
+      box.appendChild(el);
+    }
+    el.style.display = "";
+    el.style.order = show.indexOf(key);
+  }
+  box.classList.toggle("split", show.length > 1);
+  if (!show.length) box.querySelectorAll(".vf").forEach(el => el.style.display = "none");
+  document.querySelectorAll("[data-view]").forEach(b => b.classList.toggle("on", b.dataset.view === mode));
+  $("view-note").textContent = why || (show.length ? "" : "pick a simulator to watch it live here");
+}
+
+function followView(st) {
+  const m = st.mission;
+  if (!$("view-follow").checked || m.state !== "running" || view.mode === "off" || view.mode === "both") return;
+  if (m.current === view.followed) return;
+  view.followed = m.current;
+  const step = m.steps[m.current];
+  const sim = simForStep(step && step.raw);
+  if (sim && sim !== view.mode) setView(sim, `following step ${m.current + 1}: ${step.name}`);
+}
+
+function watchStep(i) {
+  const sim = simForStep(ed.doc && ed.doc.steps[i]);
+  setView(sim || "both", `watching step ${i + 1}`);
+  $("view-panel").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+document.querySelectorAll("[data-view]").forEach(b => b.addEventListener("click", () => setView(b.dataset.view)));
+$("live-link").addEventListener("click", () => { if (view.mode === "off") setView("both"); });
+setView(view.mode);
 
 poll();
 setInterval(poll, 500);

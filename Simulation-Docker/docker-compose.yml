@@ -49,6 +49,9 @@ services:
                                                # inputs like the real robot
       DRIVE_CONFIGURATION: "skid_steer_drive"  # alternative: mecanum_drive
       HEADLESS: "false"                        # true = sim only, no GUI/VNC
+      # The Gazebo camera follows the robot, so the live view on the
+      # dashboard keeps it in the picture. "false" = free camera.
+      GAZEBO_FOLLOW_ROBOT: "true"
       # To show the Gazebo GUI on the host desktop instead of the browser
       # (WSLg on Windows 11, or a normal Linux X11 session), uncomment the
       # next two lines and run `docker compose up` from inside WSL/Linux:
@@ -74,6 +77,21 @@ services:
           python3 /coffe/tools/cerebra_import.py --data /cerebra --map "$$CEREBRA_MAP" \
             --spawn "$$CEREBRA_SPAWN" --mode sim --out "$$GEN"
           set -a; . "$$GEN/selected.env"; set +a
+        fi
+        if [ "$$GAZEBO_FOLLOW_ROBOT" = "true" ] && [ "$$HEADLESS" != "true" ]; then
+          # Wait for the GUI, then let its camera follow the robot from
+          # behind and above (retries until the GUI answers).
+          ( for i in $$(seq 1 60); do
+              sleep 5
+              if ign service -s /gui/follow --reqtype ignition.msgs.StringMsg \
+                   --reptype ignition.msgs.Boolean --timeout 2000 --req 'data: "Robot"' \
+                   2>/dev/null | grep -q true; then
+                ign service -s /gui/follow/offset --reqtype ignition.msgs.Vector3d \
+                  --reptype ignition.msgs.Boolean --timeout 2000 \
+                  --req 'x: -3.0, y: -3.0, z: 3.0' > /dev/null 2>&1
+                break
+              fi
+            done ) &
         fi
         exec ros2 launch origin_one_gazebo origin_sim_common.launch.py \
           world:="$$SIM_WORLD" \

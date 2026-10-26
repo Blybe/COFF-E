@@ -1,0 +1,24 @@
+# SAMPLE 3 - Patrol and inspect
+# Drive a square; at every corner the arm points its wrist camera at the
+# floor (e.g. to look for spilled coffee or obstacles), then folds back in.
+
+name: "Sample: patrol a square and inspect the corners"
+clock: sim
+require_arm_tucked: true
+
+steps:
+  - {name: "Arm: fold in", type: arm_pose, pose: transport, speed: 40}
+
+  - {name: "Side 1", type: drive, duration: 6, linear: 0.3, check: {min_distance: 0.5}}
+  - {name: "Corner 1: look at the floor", type: arm_pose, pose: look_down, speed: 40}
+  - {name: "Corner 1: fold in", type: arm_pose, pose: transport, speed: 40}
+  - {name: "Turn 90 degrees", type: drive, duration: 3.2, linear: 0.0, angular: 0.5}
+
+  - {name: "Side 2", type: drive, duration: 6, linear: 0.3, check: {min_distance: 0.5}}
+  - {name: "Corner 2: look at the floor", type: arm_pose, pose: look_down, speed: 40}
+  - {name: "Corner 2: fold in", type: arm_pose, pose: transport, speed: 40}
+  - {name: "Turn 90 degrees", type: drive, duration: 3.2, linear: 0.0, angular: 0.5}
+
+  - {name: "Side 3", type: drive, duration: 6, linear: 0.3, check: {min_distance: 0.5}}
+  - {name: "Turn 90 degrees", type: drive, duration: 3.2, linear: 0.0, angular: 0.5}
+  - {name: "Side 4 (back to the start)", type: drive, duration: 6, linear: 0.3, check: {min_distance: 0.5}}

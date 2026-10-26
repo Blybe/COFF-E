@@ -1,0 +1,44 @@
+# SAMPLE 1 - Coffee delivery (the core COFF-E idea)
+# The arm sits on the Origin One. It is folded into the "transport" pose
+# while driving, and only unfolds when the robot has stopped at the table.
+# require_arm_tucked makes the engine REFUSE to drive when the arm is out.
+
+name: "Sample: deliver a coffee to a table"
+clock: sim
+require_arm_tucked: true
+
+steps:
+  - name: "Arm: fold in for driving"
+    type: arm_pose
+    pose: transport
+    speed: 40
+
+  - name: "Drive to the table"
+    type: drive
+    duration: 10
+    linear: 0.3
+    check: {min_distance: 1.0}
+
+  - name: "Arm: hand the cup out to the right"
+    type: arm_pose
+    pose: serve_right
+    speed: 30
+
+  - name: "Wait for the customer to take the cup"
+    type: wait
+    duration: 5
+
+  - name: "Arm: fold back in"
+    type: arm_pose
+    pose: transport
+    speed: 40
+
+  - name: "Drive back to the coffee machine"
+    type: drive
+    duration: 10
+    linear: -0.3
+    check: {min_distance: 1.0}
+
+  - name: "Arm: park at home"
+    type: arm_home
+    speed: 40
