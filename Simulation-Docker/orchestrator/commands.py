@@ -191,16 +191,25 @@ def step_commands(step, cfg, resolve_waypoint=None):
     """The commands of one step on one target (a dict the dashboard renders)."""
     kind = step.get("type")
     if kind == "drive":
-        return drive_block(step, cfg)
-    if kind == "goto":
-        return goto_block(step, cfg, resolve_waypoint)
-    if kind in ("arm_joint", "arm_home", "arm_pose"):
+        block = drive_block(step, cfg)
+    elif kind == "goto":
+        block = goto_block(step, cfg, resolve_waypoint)
+    elif kind in ("arm_joint", "arm_home", "arm_pose"):
         return arm_block(step, cfg)
-    if kind == "command":
+    elif kind == "command":
         return command_block(step, cfg)
-    return {"target": cfg["name"], "label": cfg["label"], "domain_id": cfg["domain_id"],
-            "lines": [], "note": f"a {kind} step sends no ROS command",
-            "alternatives": []}
+    else:
+        return {"target": cfg["name"], "label": cfg["label"], "domain_id": cfg["domain_id"],
+                "lines": [], "note": f"a {kind} step sends no ROS command",
+                "alternatives": []}
+    # A target that exists without its mobile base (the real target until
+    # REAL_ROBOT_IP is set) does not drive: what drive/goto steps show for it
+    # is what it will send once the real robot is connected.
+    if "robot_ip" in cfg and not cfg["robot_ip"]:
+        block["note"] = ("no mobile base yet (REAL_ROBOT_IP is not set): this step "
+                         "drives nothing here - the lines are what it will send "
+                         "once the real robot is connected")
+    return block
 
 
 def mission_commands(mission, cfgs, resolve_waypoint=None):

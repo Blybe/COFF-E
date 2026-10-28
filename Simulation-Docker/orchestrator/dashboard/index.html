@@ -221,6 +221,8 @@
     <select id="mission-select" title="Mission file (from orchestrator/missions)"></select>
     <button id="start" class="primary" title="Runs the mission as it is in the step editor">Start mission</button>
     <button id="abort" class="danger" disabled>Abort</button>
+    <button id="park" title="Clean up: every arm back to the standard position, slowly, J2 first (lifts the arm away from the table)">Park arms</button>
+    <button id="home" title="Clean up: the Avular navigates back to the home waypoint (park the arms first)">Avular home</button>
   </div>
   <span class="runon" title="Where this mission runs; saved with the mission file (see the MISSION_GUIDE)">
     Run on:
@@ -361,6 +363,8 @@ function renderHeader(st) {
   pill.className = "pill " + state;
   $("start").disabled = state === "running" || !ed.doc;
   $("abort").disabled = state !== "running";
+  $("park").disabled = state === "running";
+  $("home").disabled = state === "running";
   $("mission-select").disabled = state === "running";
   $("ed-new").disabled = state === "running";
 
@@ -395,7 +399,7 @@ function renderReason(mission) {
 const DEVICE_TYPES = { avular: ["drive", "goto"], xarm: ["arm_joint", "arm_pose", "arm_home"], wait: ["wait"], raw: ["command"] };
 const DEVICE_NAME = { avular: "Avular Origin One", xarm: "xArm 6", wait: "Wait", raw: "Raw command" };
 const DEVICE_BADGE = { avular: "AVULAR", xarm: "XARM", wait: "WAIT", raw: "RAW" };
-const TYPE_LABEL = { drive: "Drive for a time", goto: "Navigate (Nav2 on the sim, autopilot on the real robot)", arm_joint: "Move joints", arm_pose: "Named pose (transport, serve, ...)", arm_home: "Home position", wait: "Wait", command: "Raw command" };
+const TYPE_LABEL = { drive: "Drive for a time", goto: "Navigate (Nav2 on the sim, autopilot on the real robot)", arm_joint: "Move joints", arm_pose: "Named pose (transport, standard, serve, ...)", arm_home: "Home position (all-zero; sim only - the real arm has a front gripper)", wait: "Wait", command: "Raw command" };
 const TARGET_LABEL = { sim: "Simulation", real: "Real robots", both: "Simulation + real" };
 const ed = { doc: null, file: "", saved: "", open: -1, runId: null, error: "", errStep: -1, liveMsg: "", renderedLock: -2, loading: false, rawFor: -1, cmds: null, cmdsSig: "" };
 let validateTimer = null;
@@ -1276,6 +1280,18 @@ $("start").addEventListener("click", async () => {
   }
 });
 $("abort").addEventListener("click", () => api("abort"));
+// The clean-up buttons run a built-in mission on the "Run on" target; the
+// step list then shows that run (the mission file can be picked again after).
+async function startCleanup(method, what) {
+  const t = targetOf(ed.doc);
+  const where = t === "both" ? "the SIMULATION and the REAL robots" : t === "real" ? "the REAL robots" : "the simulation";
+  if (dirty() && !confirm("The step editor has unsaved changes; the clean-up run replaces the step list. Continue?")) return;
+  if (t !== "sim" && !confirm(`${what} on ${where}.\n\nMake sure the area is clear and someone can press the emergency stop.\n\nStart it?`)) return;
+  const res = await api(method, { target: t });
+  if (res) { ed.doc = null; logLines = 0; $("log").innerHTML = ""; poll(); }
+}
+$("park").addEventListener("click", () => startCleanup("park", "Every arm moves back to the standard position"));
+$("home").addEventListener("click", () => startCleanup("home", "The Avular navigates back to the home waypoint"));
 $("mission-select").addEventListener("change", (e) => {
   if (dirty() && !confirm("Discard the unsaved changes in the step editor?")) {
     e.target.value = ed.file;

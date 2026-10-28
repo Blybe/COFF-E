@@ -1,0 +1,59 @@
+# SAMPLE 9 - Dress rehearsal: the simulated Avular drives, the real arm moves
+#
+# Runs with target: both while only the real ARM is connected (REAL_XARM_HOST
+# is set, REAL_ROBOT_IP is not, so the real target has no mobile base yet):
+# every drive step goes to the simulated Avular in Gazebo, while the arm steps
+# go to the simulated arm AND the real xArm at the same time and are checked
+# on both. That is the whole coffee sequence with the real arm, with the
+# (safe) simulation doing the driving.
+#
+# When the real Avular is connected later (REAL_ROBOT_IP + the zenoh bridge),
+# the same mission automatically drives both robots.
+#
+# Before running: the arm MOVES on the real robot - clear the space around
+# it, know the emergency stop, keep ABORT ready. The arm speeds are slow on
+# purpose (20 deg/s). The real arm rests in its standard position, so step 1
+# should not move it; put the simulated arm there too before a run, and check
+# with the RAW button what will be sent.
+
+name: "Sample: rehearsal - simulated Avular + real arm"
+target: both
+clock: sim       # drive durations count Gazebo time (the sim runs ~0.6x)
+require_arm_tucked: true
+
+arm_poses:
+  # Both arms fold into the real arm's standard (initial) position for
+  # driving.
+  transport: [0, -90, 0, 0, 90, 0]
+
+steps:
+  - name: "Arm: fold into the standard position"
+    type: arm_pose
+    pose: transport
+    speed: 20
+
+  - name: "Drive to the table (simulated Avular)"
+    type: drive
+    duration: 10
+    linear: 0.3
+    check: {min_distance: 1.0}
+
+  - name: "Arm: hand the cup out to the right"
+    type: arm_pose
+    pose: serve_right
+    speed: 20
+
+  - name: "Wait for the customer to take the cup"
+    type: wait
+    duration: 3
+
+  - name: "Arm: fold back into the standard position"
+    type: arm_pose
+    pose: transport
+    speed: 20
+
+  - name: "Drive back to the coffee machine (simulated Avular)"
+    type: drive
+    duration: 10
+    linear: -0.3
+    check: {min_distance: 1.0}

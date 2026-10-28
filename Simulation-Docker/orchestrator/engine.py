@@ -43,7 +43,9 @@ tests for a fake):
 Arm interface (see arm_control.py):
     angles()                    list of 6 joint angles in degrees, or None
     angles_all()                [(target, angles)] for every arm of the run
-    command_joints(angles, speed, acc, wait)   {target: SDK code}, 0 = accepted
+    command_joints(angles, speed, acc, wait)   {target: SDK code}, 0 = accepted;
+                                a None angle keeps that arm's own joint angle
+    arm_faults()                {target: controller error} (optional)
 """
 
 import collections
@@ -536,8 +538,16 @@ class MissionEngine:
         moving = [j for j in range(len(target))
                   if step["angles"][j] is not None]
         raw = step.get("arm") or {}
+        # One arm in an error state (an emergency stop on the real arm) must
+        # stop the step before any arm moves, or a "both" run leaves the
+        # simulated arm half-way while the real one never started.
+        faults = self.arm.arm_faults() if hasattr(self.arm, "arm_faults") else {}
+        if faults:
+            listed = "; ".join(f"{name}: {text}" for name, text in sorted(faults.items()))
+            return False, (f"xArm in an error state, nothing was moved - {listed}. "
+                           "Fix the cause, then clear the error in UFACTORY Studio")
         self._set_step(i, targets=target)
-        codes = self.arm.command_joints(target, step["speed"],
+        codes = self.arm.command_joints(step["angles"], step["speed"],
                                         acc=raw.get("acc"), wait=bool(raw.get("wait")))
         refused = sorted(f"{name} (SDK code {code})"
                          for name, code in codes.items() if code != 0)

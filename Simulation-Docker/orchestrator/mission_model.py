@@ -17,7 +17,10 @@ Step types:
              with Nav2 (the planner of the origin-nav container)
   arm_joint  move the xArm 6 to <angles> (6 values in degrees) or a single
              <joint> to <angle_deg>, then check the reached angles
-  arm_home   shortcut for arm_joint with all joints at 0 degrees
+  arm_home   shortcut for arm_joint with all joints at 0 degrees (simulation
+             only: the real xArm has a gripper at the front and cannot take
+             the all-zero position, so a mission on the real robots parks in
+             the "standard" pose instead)
   arm_pose   move the xArm 6 to a named pose (see ARM_POSES, or the
              mission's own arm_poses), e.g. "transport" before driving
   wait       do nothing for <duration> seconds
@@ -90,11 +93,16 @@ ARM_OVERRIDE_KEYS = ("acc", "wait")
 
 ARM_JOINTS = 6  # xArm 6
 
-# Named xArm 6 joint poses (degrees, J1..J6), all checked on the simulated
-# arm. J1 turns the whole arm around its base, so with the arm mounted on the
-# Origin One, J1 = 0 points forward and +/-90 to the sides.
+# Named xArm 6 joint poses (degrees, J1..J6). The poses below "standard" are
+# checked on the simulated arm; J1 turns the whole arm around its base, so
+# with the arm mounted on the Origin One, J1 = 0 points forward and +/-90 to
+# the sides. "standard" is the REAL xArm's initial position: it has a gripper
+# mounted at the front, so the all-zero "home" is not a position it can take,
+# and a mission that runs on the real arm parks and drives in "standard"
+# instead (normalize_mission refuses all-zero arm steps on target real/both).
 ARM_POSES = {
-    "home": [0, 0, 0, 0, 0, 0],             # straight up
+    "home": [0, 0, 0, 0, 0, 0],             # straight up (simulation only)
+    "standard": [0, -90, 0, 0, 90, 0],      # the real xArm's initial position
     "transport": [0, -45, -30, 0, 75, 0],   # folded back over the robot, for driving
     "reach_front": [0, 30, -40, 0, 10, 0],  # reach out in front (serve / pick)
     "serve_left": [90, 20, -50, 0, 30, 0],  # hand something to the left side
@@ -104,7 +112,8 @@ ARM_POSES = {
 }
 # Shown next to the pose names in the dashboard step editor.
 ARM_POSE_INFO = {
-    "home": "straight up",
+    "home": "straight up (simulation only - the real arm has a front gripper)",
+    "standard": "the real xArm's initial position: J2 -90, J5 90",
     "transport": "folded back over the robot - the only pose to drive in",
     "reach_front": "reach out in front of the robot (serve / pick up)",
     "serve_left": "turned to the left side, arm out",
@@ -350,6 +359,46 @@ def _normalize_step_fields(raw, index, poses):
     return step
 
 
+PARK_SPEED = 10.0   # deg/s - the clean-up moves are slow on purpose
+
+
+def park_arms_mission(target):
+    """The built-in mission behind the dashboard's "Park arms" button: every
+    arm of the target back to the standard position.
+
+    J2 goes back first, on its own: from a serving pose that lifts the arm
+    up and away from whatever it reached towards (a table) before the other
+    joints turn. Each arm keeps its own other joints during that first move."""
+    standard = ARM_POSES["standard"]
+    lift = [None] * ARM_JOINTS
+    lift[1] = standard[1]
+    return normalize_mission({
+        "name": "Park the arms in the standard position",
+        "target": target, "clock": "wall",
+        "steps": [
+            {"name": "Arm: lift J2 back (away from the table)", "type": "arm_joint",
+             "angles": lift, "speed": PARK_SPEED},
+            {"name": "Arm: the standard position", "type": "arm_pose",
+             "pose": "standard", "speed": PARK_SPEED},
+        ]}, origin="park arms")
+
+
+def home_mission(target, waypoint="Home"):
+    """The built-in mission behind the "Avular home" button: navigate back
+    to the home waypoint. The arms must be parked first - the driving rule
+    checks them against the standard position, the pose they rest in."""
+    return normalize_mission({
+        "name": f"Avular back to {waypoint}",
+        "target": target,
+        # the real robot has no Gazebo /clock
+        "clock": "wall" if target == "real" else "sim",
+        "require_arm_tucked": True,
+        "arm_poses": {TUCK_POSE: list(ARM_POSES["standard"])},
+        "steps": [{"name": f"Navigate back to {waypoint}", "type": "goto",
+                   "waypoint": waypoint}],
+    }, origin="avular home")
+
+
 def normalize_mission(data, origin="mission"):
     """Validate a parsed mission document and fill in all defaults."""
     if not isinstance(data, dict):
@@ -380,6 +429,24 @@ def normalize_mission(data, origin="mission"):
     raw_steps = data.get("steps")
     if not isinstance(raw_steps, list) or not raw_steps:
         raise MissionError(f"{origin}: 'steps' must be a non-empty list")
+    if target != "sim":
+        # Safety: the real xArm 6 has a gripper mounted at its front, so the
+        # all-zero home position is not a place it can go. A mission that
+        # runs on the real arm (target real, or both) parks and drives in the
+        # "standard" pose instead - see ARM_POSES.
+        for i, raw in enumerate(raw_steps):
+            if not isinstance(raw, dict):
+                continue
+            all_zero = (raw.get("type") == "arm_home"
+                        or (raw.get("type") == "arm_joint"
+                            and isinstance(raw.get("angles"), (list, tuple))
+                            and len(raw["angles"]) == ARM_JOINTS
+                            and all(a == 0 for a in raw["angles"])))
+            if all_zero:
+                raise MissionError(
+                    f"{origin}: step {i + 1}: this step drives the arm to all-zero "
+                    f"angles, which the real xArm cannot take (gripper at the front). "
+                    f"Use arm_pose with a safe pose, e.g. 'standard'.")
     # An explicit timeout is kept as-is; when none is given the engine
     # computes a deadline from the step type and the live sim speed
     # (engine.MissionEngine._deadline).

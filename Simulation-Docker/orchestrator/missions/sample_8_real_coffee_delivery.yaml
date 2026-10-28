@@ -1,0 +1,59 @@
+# SAMPLE 8 - The same delivery as sample 1, on the REAL robots
+#
+# The point of this mission: check that the workflow that passed in the
+# simulation also runs on the real Origin One + real xArm 6. Same steps, same
+# speeds, same checks - only the arm's park/drive position differs, because
+# the real arm has a gripper mounted at its front and cannot take the
+# all-zero home position. Its standard ("initial") position is J1 0, J2 -90,
+# J3 0, J4 0, J5 90, J6 0, and that is what it drives and parks in, so
+# this mission makes it the "transport" pose (require_arm_tucked checks it).
+#
+# Before running: start the zenoh bridge (docker compose --profile real up -d)
+# with the robot's IP in .env, clear the area, know the emergency stops, and
+# keep a hand on ABORT in the dashboard. Check the angles this mission would
+# send with the RAW button first - on the real arm, the serve poses come from
+# the simulation; if the gripper changes what the arm can safely reach, put
+# different angles in arm_poses below.
+
+name: "Sample: real coffee delivery to a table"
+target: real
+clock: wall        # no Gazebo /clock on the real robot: durations are real time
+require_arm_tucked: true
+arm_poses:
+  # The real arm's standard (initial) position doubles as the drive pose.
+  transport: [0, -90, 0, 0, 90, 0]
+
+steps:
+  - name: "Arm: fold into the standard position"
+    type: arm_pose
+    pose: transport
+    speed: 40
+
+  - name: "Drive to the table"
+    type: drive
+    duration: 10
+    linear: 0.3
+    check: {min_distance: 1.0}
+
+  - name: "Arm: hand the cup out to the right"
+    type: arm_pose
+    pose: serve_right
+    speed: 30
+
+  - name: "Wait for the customer to take the cup"
+    type: wait
+    duration: 5
+
+  - name: "Arm: fold back into the standard position"
+    type: arm_pose
+    pose: transport
+    speed: 40
+
+  - name: "Drive back to the coffee machine"
+    type: drive
+    duration: 10
+    linear: -0.3
+    check: {min_distance: 1.0}
+  # No "park at home" step at the end, unlike sample 1: the real arm already
+  # parks in the standard position it is in, and arm_home (all-zero) is
+  # refused on the real arm anyway.

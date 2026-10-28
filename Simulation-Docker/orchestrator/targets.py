@@ -16,6 +16,13 @@ not have to know where the commands go.
 Real robot endpoints come from the environment, so the lab network can change
 without touching the code:
 
+  REAL_ROBOT_IP           IP of the real Origin One. Empty [default] = the
+                          real target has no mobile base (yet): drive/goto
+                          steps then have nothing to drive and fail clearly,
+                          and a "both" mission drives the simulation while
+                          the real arm does the arm steps. Set it (and start
+                          the zenoh bridge, compose profile "real") once the
+                          Avular is connected.
   REAL_ROS_DOMAIN_ID      ROS 2 domain of the real robot [42]. The orchestrator
                           joins that domain with its own ROS context; the zenoh
                           bridge (compose profile "real") is the only thing in
@@ -104,6 +111,10 @@ def real_config(env=None):
     return {
         "name": REAL,
         "label": "Real Avular Origin One + xArm 6",
+        # No IP yet = the real target exists as arm only: drive/goto steps
+        # have no mobile base to drive (see NoRobot), and a "both" mission
+        # drives the simulation while the real arm does the arm steps.
+        "robot_ip": _text(env, "REAL_ROBOT_IP", ""),
         "domain_id": _whole(env, "REAL_ROS_DOMAIN_ID", 42),
         "cmd_vel_topic": _text(env, "REAL_CMD_VEL_TOPIC", "/robot/cmd_vel_user"),
         "cmd_vel_type": "geometry_msgs/msg/Twist",
@@ -143,6 +154,90 @@ def configs_for(target, env=None):
     return [sim_config(env)]
 
 
+class NoRobot:
+    """A neutral stand-in for the robot link of a target that has no mobile
+    base (the real target until REAL_ROBOT_IP is set): reads stay neutral
+    and every command is refused, so a drive or goto step fails with a clear
+    message instead of waiting for a robot that is not there. It is never in
+    the command fan-out - only the feedback reads and the dashboard snapshot
+    go through it."""
+
+    def snapshot(self):
+        return {
+            "target": "real",
+            "state": "not configured",
+            "error": "no mobile base for this target (REAL_ROBOT_IP is not set)",
+            "connected": False, "in_control": False, "nav_ready": False,
+            "x": 0.0, "y": 0.0, "yaw": 0.0, "speed": 0.0,
+            "time_factor": 0.0, "sim_fresh": False,
+            "waypoints": [], "trajectory": [], "map": "", "spawn": "",
+            "cmd_vel_topic": "", "domain_id": None, "mode_service": None,
+            "nav_kind": "",
+        }
+
+    # reads
+    def sim_seconds(self):
+        return 0.0
+
+    def sim_fresh(self):
+        return False
+
+    def time_factor(self):
+        return 0.0
+
+    def odom(self):
+        return {"x": 0.0, "y": 0.0, "yaw": 0.0, "speed": 0.0, "fresh": False}
+
+    def odom_topic(self):
+        return "(no mobile base)"
+
+    def pose(self):
+        return None
+
+    def waypoints(self):
+        return []
+
+    def waypoint(self, name):
+        return None
+
+    def nav_ready(self, action=None):
+        return False
+
+    def nav_status(self, goal):
+        return "", 0.0
+
+    def nav_error(self):
+        return "no mobile base for this target"
+
+    # commands (a backstop: the fan-out never includes this stand-in)
+    def take_control(self, topic=None):
+        return False, "no mobile base for this target (set REAL_ROBOT_IP)"
+
+    def release_control(self, topic=None):
+        return True, ""
+
+    def publish_twist(self, msg, topic=None):
+        pass
+
+    def publish_cmd(self, linear, angular, topic=None):
+        pass
+
+    def stop(self, topic=None):
+        pass
+
+    def nav_send(self, x, y, yaw, frame=None, action=None):
+        return None
+
+    def nav_cancel(self, goal):
+        pass
+
+    def close(self):
+        pass
+
+
+_NO_ROBOT = NoRobot()
+
+
 class Runtime:
     """One target: its configuration plus its ROS link and its arm link."""
 
@@ -150,7 +245,11 @@ class Runtime:
         from arm_control import Arm
         from ros_robot import Robot
         self.cfg = cfg
-        self.robot = Robot(cfg, log=log)
+        # The real target exists without its mobile base until REAL_ROBOT_IP
+        # is set (arm-only testing): there is then nothing to drive, and
+        # drive/goto steps fail clearly instead of talking to a dead link.
+        has_robot = cfg["name"] == SIM or cfg.get("robot_ip")
+        self.robot = Robot(cfg, log=log) if has_robot else None
         self.arm = Arm(host=cfg["arm_host"], log=log)
 
 
@@ -186,8 +285,12 @@ class Hardware:
         if name not in self._runtimes:
             rt = Runtime(config(name, self.env), log=self.log)
             self._runtimes[name] = rt
-            self.log(f"[targets] {name}: {rt.cfg['label']} (ROS domain "
-                     f"{rt.cfg['domain_id']}, cmd_vel on {rt.cfg['cmd_vel_topic']})")
+            if rt.robot is None:
+                base = "no mobile base - REAL_ROBOT_IP is not set"
+            else:
+                base = (f"ROS domain {rt.cfg['domain_id']}, "
+                        f"cmd_vel on {rt.cfg['cmd_vel_topic']}")
+            self.log(f"[targets] {name}: {rt.cfg['label']} ({base})")
         return self._runtimes[name]
 
     def names(self):
@@ -205,6 +308,19 @@ class Hardware:
     def _primary(self):
         return self.active[0]
 
+    def _robots(self):
+        """The active targets that have a mobile base to drive. The real
+        target has none until REAL_ROBOT_IP is set, so with the real arm
+        connected a "both" mission drives the simulation and moves the real
+        arm - the dress-rehearsal setup."""
+        return [rt for rt in self.active if rt.robot is not None]
+
+    def _primary_robot(self):
+        """The robot link the engine reads feedback from; a neutral stand-in
+        when the primary target has no mobile base."""
+        robot = self._primary().robot
+        return robot if robot is not None else _NO_ROBOT
+
     def snapshot(self):
         """Per-target state for the dashboard (only targets that exist)."""
         return {name: {
@@ -217,19 +333,21 @@ class Hardware:
             "nav_name": rt.cfg["nav_name"],
             "nav_kind": rt.cfg["nav_kind"],
             "arm_host": rt.cfg["arm_host"] or None,
-            "robot": rt.robot.snapshot(),
+            "robot": rt.robot.snapshot() if rt.robot else _NO_ROBOT.snapshot(),
             "arm": rt.arm.snapshot(),
         } for name, rt in self._runtimes.items()}
 
     def robot_snapshot(self):
         """The robot state of the current run (for the dashboard panels)."""
-        return self._primary().robot.snapshot()
+        return self._primary_robot().snapshot()
 
     def arm_snapshot(self):
         return self._primary().arm.snapshot()
 
     def close(self):
         for rt in self._runtimes.values():
+            if rt.robot is None:
+                continue
             try:
                 rt.robot.close()
             except Exception:
@@ -242,73 +360,84 @@ class Hardware:
         return time.time()
 
     def sim_seconds(self):
-        return self._primary().robot.sim_seconds()
+        return self._primary_robot().sim_seconds()
 
     def sim_fresh(self):
-        return self._primary().robot.sim_fresh()
+        return self._primary_robot().sim_fresh()
 
     def time_factor(self):
-        return self._primary().robot.time_factor()
+        return self._primary_robot().time_factor()
 
     def odom(self):
-        return self._primary().robot.odom()
+        return self._primary_robot().odom()
+
+    def odom_topic(self):
+        return self._primary_robot().odom_topic()
 
     def pose(self):
-        return self._primary().robot.pose()
+        return self._primary_robot().pose()
 
     def publish_twist(self, msg, topic=None):
-        for rt in self.active:
+        for rt in self._robots():
             rt.robot.publish_twist(msg, topic=topic)
 
     def publish_cmd(self, linear, angular, topic=None):
-        for rt in self.active:
+        for rt in self._robots():
             rt.robot.publish_cmd(linear, angular, topic=topic)
 
     def stop(self, topic=None):
-        for rt in self.active:
+        for rt in self._robots():
             rt.robot.stop(topic=topic)
 
     def take_control(self, topic=None):
-        """[(target, ok, message)] - take over the mobile base where the
-        target needs it (the real Origin One only drives in USER mode)."""
-        return [(rt.cfg["name"],) + rt.robot.take_control(topic=topic) for rt in self.active]
+        """[(target, ok, message)] - take over every mobile base that exists
+        (the real Origin One only drives in USER mode)."""
+        robots = self._robots()
+        if not robots:
+            return [(self._primary().cfg["name"], False,
+                     "no mobile base for this target (set REAL_ROBOT_IP) - "
+                     "nothing to drive")]
+        return [(rt.cfg["name"],) + rt.robot.take_control(topic=topic)
+                for rt in robots]
 
     def release_control(self, topic=None):
         return [(rt.cfg["name"],) + rt.robot.release_control(topic=topic)
-                for rt in self.active]
+                for rt in self._robots()]
 
     def nav_ready(self, action=None):
-        return self._primary().robot.nav_ready(action=action)
+        return self._primary_robot().nav_ready(action=action)
 
     def nav_send(self, x, y, yaw, frame=None, action=None):
-        """One goal per active target; None when any of them refused it."""
+        """One goal per mobile base; None when any of them refused it."""
         goals = {}
-        for rt in self.active:
+        for rt in self._robots():
             goal = rt.robot.nav_send(x, y, yaw, frame=frame, action=action)
             if goal is None:
                 return None
             goals[rt.cfg["name"]] = goal
-        return goals
+        return goals or None
 
     def nav_status(self, goals):
-        return self._primary().robot.nav_status(goals[self._primary().cfg["name"]])
+        return self._primary_robot().nav_status(goals.get(self._primary().cfg["name"]))
 
     def nav_cancel(self, goals):
-        for rt in self.active:
+        for rt in self._robots():
             rt.robot.nav_cancel(goals.get(rt.cfg["name"]))
 
     def nav_error(self):
-        return self._primary().robot.nav_error()
+        return self._primary_robot().nav_error()
 
     def waypoint(self, name):
         """Waypoint lookup always uses the shared Cerebra scene (the map the
         simulation and the real robot are both localised in)."""
         rt = self._runtimes.get(SIM) or self._primary()
-        return rt.robot.waypoint(name)
+        robot = rt.robot if rt.robot is not None else _NO_ROBOT
+        return robot.waypoint(name)
 
     def waypoints(self):
         rt = self._runtimes.get(SIM) or self._primary()
-        return rt.robot.waypoints()
+        robot = rt.robot if rt.robot is not None else _NO_ROBOT
+        return robot.waypoints()
 
     # ----------------------------------------------------- arm interface
 
@@ -318,7 +447,22 @@ class Hardware:
     def angles_all(self):
         return [(rt.cfg["name"], rt.arm.angles()) for rt in self.active]
 
+    def arm_faults(self):
+        """{target: controller error} of every active arm that has one."""
+        return {rt.cfg["name"]: rt.arm.fault() for rt in self.active if rt.arm.fault()}
+
     def command_joints(self, angles_deg, speed, acc=None, wait=False):
-        """{target: SDK code} - the same joint move on every active arm."""
-        return {rt.cfg["name"]: rt.arm.command_joints(
-            angles_deg, speed, acc=acc, wait=wait) for rt in self.active}
+        """{target: SDK code} - the same joint move on every active arm.
+
+        A joint left as None keeps the angle of *that* arm: filling it in
+        from the simulated arm would send the simulation's joints to the
+        real arm whenever the two stand differently."""
+        codes = {}
+        for rt in self.active:
+            own = rt.arm.angles()
+            if any(a is None for a in angles_deg) and own is None:
+                codes[rt.cfg["name"]] = -1
+                continue
+            angles = [own[j] if a is None else a for j, a in enumerate(angles_deg)]
+            codes[rt.cfg["name"]] = rt.arm.command_joints(angles, speed, acc=acc, wait=wait)
+        return codes

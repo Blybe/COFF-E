@@ -201,7 +201,7 @@ Open <http://localhost:8080>:
 
 | Panel | What it shows |
 |---|---|
-| **Header** | mission dropdown, Start/Abort, overall state, whether robot + arm are connected, the sim-time factor, links to Gazebo/RViz/Studio |
+| **Header** | mission dropdown, Start/Abort, the two clean-up buttons (below), overall state, whether robot + arm are connected, the sim-time factor, links to Gazebo/RViz/Studio |
 | **Step editor** | every step with its device (Avular / xArm), live progress and check result; click a step to edit it (see part 6) |
 | **Origin One** | live position/heading/speed, the driven trajectory on a map (waypoints of the Cerebra map included), button to embed the Gazebo view |
 | **xArm 6** | live joint angles with target markers, a stylized arm sketch that moves with J2/J3, button to embed UFACTORY Studio |
@@ -209,6 +209,20 @@ Open <http://localhost:8080>:
 
 The robot panel plots **odometry relative to the spawn point**, which is
 where the robot spawned (the `Home` waypoint by default).
+
+### Clean up: Park arms and Avular home
+
+Two header buttons put the robots back in their starting state, on the
+target the **Run on** switch selects. Each one runs a small built-in mission,
+so the step list shows its progress, every move is checked, and Abort stops
+it:
+
+| Button | What it does |
+|---|---|
+| **Park arms** | every arm back to the standard position [0, -90, 0, 0, 90, 0] at 10 deg/s: J2 goes back first on its own, which lifts the arm up and away from a table it reached towards, then the other joints follow. Each arm keeps its own other joints during that first move. |
+| **Avular home** | the Avular navigates back to the home waypoint (`CEREBRA_SPAWN`). The arms must be parked first: the driving rule checks them against the standard position. While `REAL_ROBOT_IP` is not set, only the simulated Avular drives. |
+
+After a clean-up run, pick the mission in the dropdown again to get back to it.
 
 ## 5. Run your first mission
 
@@ -307,16 +321,20 @@ and appear in the dropdown. Open one in the step editor and change it.
 | `sample_5_safety_fail.yaml` | **fails on purpose**: tries to drive with the arm reaching out, and the safety rule refuses. Fix it by inserting an *Arm pose: transport* step |
 | `sample_6_nav_serve.yaml` | Nav2 to a serving spot, serve to the left, Nav2 back to the Home waypoint (watch it in RViz) |
 | `sample_7_raw_commands.yaml` | the raw side of the orchestrator: a raw command step, a drive with the raw Twist fields and publish rate spelled out, a drive on the USER topic (how the real robot is driven), a per-target command, and a hand-published zero Twist |
+| `sample_8_real_coffee_delivery.yaml` | sample 1's delivery on the **real robots**: same steps and speeds, but the arm parks and drives in its standard position (the real arm has a front gripper, so all-zero is refused) |
+| `sample_9_rehearsal.yaml` | **dress rehearsal**: the simulated Avular does the driving while the real arm does the arm steps (target: both with only the arm real) |
 
 They all use two features made for the arm on the robot:
 
-- **Named arm poses** (step type `arm_pose`): `home`, `transport` (folded
+- **Named arm poses** (step type `arm_pose`): `home`, `standard` (the real
+  xArm's parked position), `transport` (folded
   back over the robot, for driving), `reach_front`, `serve_left`,
   `serve_right`, `look_down`, `wave_up`. A mission can add its own with
-  `arm_poses:` (see `sample_2_pick_and_place.yaml`). All built-in poses are
-  checked on the simulated xArm. Check them again on the real robot once
-  the arm is mounted, because the robot body and its cargo are not in the
-  arm simulation.
+  `arm_poses:` (see `sample_2_pick_and_place.yaml`). All built-in poses
+  except `standard` are checked on the simulated xArm; `standard` is the
+  real arm's position, where it parks and drives. Check the rest again on
+  the real robot once the arm is mounted, because the robot body and its
+  cargo are not in the arm simulation.
 - **"Only drive with the arm tucked in"** (`require_arm_tucked: true`, the
   checkbox at the top of the step editor): before every `drive` or `goto`
   step the engine checks that the arm is within 5° of the `transport` pose.
@@ -398,12 +416,35 @@ file stays portable.
 | Target | The robot | The arm | Checked with |
 |---|---|---|---|
 | `sim` | Gazebo Origin One, `/robot/cmd_vel` | UFACTORY Studio arm at 192.168.100.200 | the simulation's odometry and joint angles |
-| `real` | real Origin One, over the zenoh bridge | real xArm at `REAL_XARM_HOST` | the real robot's odometry/global pose and the real arm's angles |
-| `both` | both at once | both at once | the simulation (the real robots get the same commands) |
+| `real` | real Origin One, over the zenoh bridge (none until `REAL_ROBOT_IP` is set) | real xArm at `REAL_XARM_HOST` | the real robot's odometry/global pose and the real arm's angles |
+| `both` | every robot that exists (the simulation while `REAL_ROBOT_IP` is empty) | both at once | the simulation (the real robots get the same commands) |
 
 Switching to Real or Both asks for confirmation and connects to the real robot
 straight away, so the header chips show whether it is reachable *before* you
 start. Starting a mission on the real robots asks again.
+
+### Dress rehearsal: simulated Avular + real arm
+
+The real target exists with only its arm: the arm speaks SDK-over-TCP
+directly (no zenoh bridge needed), while its mobile base only exists once
+`REAL_ROBOT_IP` is set and the bridge runs. So with the real arm connected
+but no Avular yet:
+
+- a `target: real` mission runs its arm steps on the real arm; a drive step
+  in it fails immediately with "no mobile base for this target" instead of
+  waiting for a robot that is not there;
+- a `target: both` mission becomes a **dress rehearsal**: every drive step
+  goes to the simulated Avular in Gazebo, every arm step also goes to the
+  real arm and is checked on both arms.
+
+`sample_9_rehearsal.yaml` is exactly that: sample 1's delivery sequence,
+with the simulated Avular doing the driving and the real arm folding out to
+serve. When the Avular is connected later (`REAL_ROBOT_IP` + the bridge),
+the same mission automatically drives both robots.
+
+The real arm can also be used from UFACTORY Studio itself: open
+<http://localhost:18333> and add the arm with its IP (`192.168.1.229` when it
+is on this machine's Ethernet) to see and jog it there.
 
 ### What is different on the real robot
 
@@ -435,6 +476,50 @@ using Nav2, which does support cancel.)
 
 The arm is the same code path on both sides: the xArm Python SDK
 (`set_servo_angle`), with `REAL_XARM_HOST` instead of the Studio container.
+The **poses** are not the same, though: the real xArm has a gripper mounted
+at its front, so it cannot take the all-zero home position. Its standard
+("initial") position is
+
+| J1 | J2 | J3 | J4 | J5 | J6 |
+|---|---|---|---|---|---|
+| 0 | -90 | 0 | 0 | 90 | 0 |
+
+and that is where a real mission parks and drives. The mission model refuses
+`arm_home` (and all-zero `arm_joint` angles) on `target: real` or `both` for
+that reason. `sample_8_real_coffee_delivery.yaml` is sample 1's workflow on
+the real robots: it makes the standard position the `transport` pose with
+
+```yaml
+arm_poses:
+  transport: [0, -90, 0, 0, 90, 0]
+```
+
+so the "arm tucked in" driving rule checks the real arm against the position
+it actually drives in. The other built-in poses (`serve_right`, ...) come
+from the simulation: check them with the RAW button and, if the gripper
+changes what the arm can reach, put different angles in the mission's
+`arm_poses`.
+
+To confirm the arm **positions** on the real arm first - before connecting
+the arm to the rest with ROS - there is a small script for the Python IDE of
+UFACTORY Studio, one function per position:
+
+```bash
+py -3 tools/xarm_positions.py               # every position, one at a time
+py -3 tools/xarm_positions.py serve_right   # or just one
+```
+
+Each move is checked with the same 3 deg tolerance a mission uses, and the
+script stops at the first position that fails, so a problem is seen
+immediately.
+
+A note about the simulation: the simulated arm starts straight up
+(all-zero) and folds into the standard position without a problem, so put
+it there before a `both` run to match the real arm. An earlier standard
+position, [0, -90, 0, 180, 180, 0], tripped the arm's self-collision
+protection (controller error 22) on the way. A move the controller stops
+halfway can leave the simulated arm stuck in that error; `docker restart
+uf_software` resets it to straight up.
 
 ### Connecting to the real robot (zenoh bridge)
 
@@ -544,7 +629,7 @@ Top-level options:
 | `name` | string | shown in the dashboard |
 | `target` | `sim` (default) / `real` / `both` | where the mission runs (see part 8) |
 | `require_arm_tucked` | `true` / `false` (default) | drive/goto steps fail unless the arm is in the `transport` pose |
-| `arm_poses` | `{name: [6 angles]}` | extra named poses for `arm_pose` steps |
+| `arm_poses` | `{name: [6 angles]}` | extra or changed named poses for `arm_pose` steps (a real mission changes `transport` to the real arm's standard position) |
 | `clock` | `sim` (default) / `wall` | `sim` = step durations count Gazebo time; `wall` = real time |
 
 Step types and their checks:
@@ -554,7 +639,7 @@ Step types and their checks:
 | `drive` | `duration`, `linear`, `angular`, `check.min_distance` | duration elapsed **and** odometry moved ≥ `min_distance` (if set) |
 | `goto` | `waypoint` or `x`/`y`/`yaw` | Nav2 reports the goal reached |
 | `arm_joint` | `joint`+`angle_deg` or `angles` (6 values), `speed`, `check.tolerance_deg` | every commanded joint is within `tolerance_deg` of its target |
-| `arm_home` | `speed` | all six joints within `tolerance_deg` of 0 |
+| `arm_home` | `speed` | all six joints within `tolerance_deg` of 0 - **simulation only**: refused on `target: real`/`both`, the real arm's gripper cannot take all-zero (use `arm_pose`, e.g. `standard`) |
 | `arm_pose` | `pose` (a name), `speed`, `check.tolerance_deg` | all six joints within `tolerance_deg` of the pose |
 | `wait` | `duration` | the time passed |
 | `command` | `run` (or `sim_run`/`real_run`), `expect` (0), `timeout` (30) | the command's exit code is `expect` |

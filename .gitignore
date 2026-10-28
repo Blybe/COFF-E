@@ -1,6 +1,2 @@
-# Local agent instructions.
-#
-# AGENTS.md is deliberately kept out of Git: it holds notes for the agent
-# working in this checkout, and Robin reviews and commits code changes by hand.
-# Ignoring it keeps it out of `git status` and out of every commit.
 AGENTS.md
+.env

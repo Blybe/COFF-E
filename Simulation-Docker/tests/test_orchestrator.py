@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import tempfile
+import types
 import unittest
 
 ORCH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "orchestrator")
@@ -158,6 +159,8 @@ class FakeArm:
         return list(self.current)
 
     def command_joints(self, angles_deg, speed, acc=None, wait=False):
+        # like targets.Hardware: a None joint keeps this arm's own angle
+        angles_deg = [c if a is None else a for a, c in zip(angles_deg, self.current)]
         self.commanded = (list(angles_deg), speed)
         self.acc = acc
         self.wait = wait
@@ -345,6 +348,69 @@ class TestEngineArm(unittest.TestCase):
         self.assertEqual(state, engine.FAILED)
         self.assertIsNone(arm.commanded)
         self.assertIn("arm not connected", eng.snapshot()["steps"][0]["detail"])
+
+    def test_each_arm_keeps_its_own_joints_when_only_some_move(self):
+        """On "both", a step that moves only J2 must not send the simulated
+        arm's other joints to the real arm."""
+        class Arm:
+            def __init__(self, angles):
+                self.now, self.sent = angles, None
+
+            def angles(self):
+                return self.now
+
+            def command_joints(self, angles, speed, acc=None, wait=False):
+                self.sent = angles
+                return 0
+        sim, real = Arm([-90.0, 20, -50, 0, 30, 0]), Arm([-85.8, 15.4, -47, 0, 33.3, 0])
+        hw = targets.Hardware.__new__(targets.Hardware)
+        hw.active = [types.SimpleNamespace(cfg={"name": "sim"}, arm=sim),
+                     types.SimpleNamespace(cfg={"name": "real"}, arm=real)]
+        codes = hw.command_joints([None, -90, None, None, None, None], 10)
+        self.assertEqual(codes, {"sim": 0, "real": 0})
+        self.assertEqual(sim.sent, [-90.0, -90, -50, 0, 30, 0])
+        self.assertEqual(real.sent, [-85.8, -90, -47, 0, 33.3, 0])
+        # an arm without feedback cannot have its joints filled in
+        real.now = None
+        self.assertEqual(hw.command_joints([None, -90, None, None, None, None], 10)["real"], -1)
+
+    def test_park_arms_lifts_j2_first_then_goes_to_standard(self):
+        for target in ("sim", "real", "both"):
+            m = mission_model.park_arms_mission(target)
+            self.assertEqual(m["target"], target)
+            first, second = m["steps"]
+            self.assertEqual(first["angles"], [None, -90.0, None, None, None, None])
+            self.assertEqual(second["angles"], mission_model.ARM_POSES["standard"])
+            self.assertEqual(first["speed"], mission_model.PARK_SPEED)
+        eng, _, arm = make_engine(arm=FakeArm(step=30.0))
+        arm.current = [-90.0, 20.0, -50.0, 0.0, 30.0, 0.0]   # serve_right
+        self.assertEqual(eng.run_blocking(mission_model.park_arms_mission("sim")), engine.PASSED)
+        self.assertEqual(arm.current, [0.0, -90.0, 0.0, 0.0, 90.0, 0.0])
+
+    def test_avular_home_needs_the_arms_parked(self):
+        m = mission_model.home_mission("both", "Home")
+        self.assertEqual(m["steps"][0]["waypoint"], "Home")
+        self.assertEqual(mission_model.home_mission("real")["clock"], "wall")
+        eng, robot, arm = make_engine()
+        arm.current = [-90.0, 20.0, -50.0, 0.0, 30.0, 0.0]   # not parked
+        self.assertEqual(eng.run_blocking(mission_model.home_mission("sim", "Home")),
+                         engine.FAILED)
+        self.assertIn("not tucked", eng.snapshot()["steps"][0]["detail"])
+
+    def test_arm_in_an_error_state_fails_before_any_arm_moves(self):
+        """An emergency stop on one arm (controller error C2 on the real
+        xArm) stops the step before the other arm is commanded."""
+        eng, _, arm = make_engine(arm=FakeArm())
+        arm.arm_faults = lambda: {"real": "controller error C2: The Emergency IO "
+                                          "of the Control Box is triggered"}
+        state = eng.run_blocking(mission(steps=[
+            {"type": "arm_joint", "joint": 1, "angle_deg": 90, "timeout": 1.0},
+        ]))
+        self.assertEqual(state, engine.FAILED)
+        self.assertIsNone(arm.commanded)
+        detail = eng.snapshot()["steps"][0]["detail"]
+        self.assertIn("nothing was moved", detail)
+        self.assertIn("real: controller error C2", detail)
 
 
 class TestEngineGoto(unittest.TestCase):
@@ -555,6 +621,49 @@ class TestArmOnRobot(unittest.TestCase):
             mission_model.normalize_mission({"name": "x", "arm_poses": {"bad": [1, 2]},
                                              "steps": [{"type": "wait", "duration": 1}]})
 
+    def test_standard_pose_is_the_real_arms_parked_position(self):
+        """The real xArm's standard ("initial") position: J2 -90, J5 90."""
+        m = mission(steps=[{"type": "arm_pose", "pose": "standard"}])
+        self.assertEqual(m["steps"][0]["angles"], [0, -90, 0, 0, 90, 0])
+
+    def test_all_zero_arm_steps_are_refused_on_the_real_targets(self):
+        """The real xArm has a gripper at the front and cannot take the
+        all-zero position, so neither a real nor a both mission may park
+        there - in the arm_home shortcut or spelled out as angles."""
+        for target in ("real", "both"):
+            for step in ({"type": "arm_home"},
+                         {"type": "arm_joint", "angles": [0, 0, 0, 0, 0, 0]}):
+                with self.assertRaises(mission_model.MissionError):
+                    mission_model.normalize_mission(
+                        {"name": "x", "target": target, "steps": [step]})
+        # on the simulation the all-zero home position stays available
+        self.assertEqual(mission(steps=[{"type": "arm_home"}])["steps"][0]["angles"],
+                         [0.0] * 6)
+
+    def test_real_mission_drives_in_its_own_transport_pose(self):
+        """A mission can make the real arm's standard position the 'transport'
+        pose; the tucked-in check must then use the mission's pose, not the
+        built-in simulation one."""
+        eng, robot, _ = make_engine()
+        m = mission_model.normalize_mission({
+            "name": "x", "require_arm_tucked": True,
+            "arm_poses": {"transport": [0, -90, 0, 0, 90, 0]},
+            "steps": [{"type": "arm_pose", "pose": "transport"},
+                      {"type": "drive", "duration": 1, "linear": 0.1,
+                       "check": {"min_distance": 0.05}}]})
+        self.assertEqual(eng.run_blocking(m), engine.PASSED)
+        # same arm position, but without the override it is 45 deg away
+        # from the built-in transport pose, so the safety rule stops
+        # the mission
+        eng2, robot2, _ = make_engine()
+        m2 = mission_model.normalize_mission({
+            "name": "x", "require_arm_tucked": True,
+            "steps": [{"type": "arm_joint", "angles": [0, -90, 0, 0, 90, 0]},
+                      {"type": "drive", "duration": 1, "linear": 0.1}]})
+        self.assertEqual(eng2.run_blocking(m2), engine.FAILED)
+        self.assertIn("not tucked", eng2.snapshot()["steps"][1]["detail"])
+        self.assertNotIn((0.1, 0.0), robot2.cmds)  # never drove
+
     def test_drive_refused_when_arm_not_tucked(self):
         eng, robot, _ = make_engine()
         m = mission_model.normalize_mission({"name": "x", "require_arm_tucked": True, "steps": [
@@ -704,6 +813,20 @@ class TestTargets(unittest.TestCase):
         # the simulation comes first, so it stays the one whose feedback is checked
         self.assertEqual([c["name"] for c in targets.configs_for("both", {})], ["sim", "real"])
 
+    def test_real_target_exists_without_a_mobile_base(self):
+        """REAL_ROBOT_IP empty (the default) = the real target is arm-only:
+        a "both" mission then drives the simulation and moves the real arm.
+        Drive steps on such a target are refused with a clear message."""
+        self.assertEqual(targets.real_config({})["robot_ip"], "")
+        cfg = targets.real_config({"REAL_ROBOT_IP": "192.168.1.1"})
+        self.assertEqual(cfg["robot_ip"], "192.168.1.1")
+        ok, message = targets.NoRobot().take_control()
+        self.assertFalse(ok)
+        self.assertIn("REAL_ROBOT_IP", message)
+        self.assertFalse(targets.NoRobot().sim_fresh())
+        self.assertFalse(targets.NoRobot().odom()["fresh"])
+        self.assertIsNone(targets.NoRobot().waypoint("Home"))
+
     def test_mission_target_is_validated_and_saved(self):
         m = mission_model.normalize_mission({"name": "x", "target": "real",
                                              "steps": [{"type": "wait", "duration": 1}]})
@@ -742,6 +865,24 @@ class TestRawCommands(unittest.TestCase):
         self.assertIn("origin_msgs/srv/SetControlMode", text)
         self.assertIn("{mode: {mode: 30}}", text)
         self.assertIn("origin_msgs/srv/ReturnControlMode", text)
+
+    def test_drive_on_real_without_a_mobile_base_says_so(self):
+        """The real target exists with only its arm until REAL_ROBOT_IP is
+        set: its drive/goto blocks keep the commands (what it will send once
+        the robot is connected) but say that nothing drives yet."""
+        m = mission(steps=[{"type": "drive", "duration": 5, "linear": 0.2},
+                           {"type": "goto", "x": 2.0, "y": -1.5}])
+        for step in m["steps"]:
+            block = commands.step_commands(step, self.real)
+            self.assertIn("no mobile base", block["note"])
+            self.assertIn("REAL_ROBOT_IP", block["note"])
+            self.assertTrue(block["lines"])
+            self.assertNotIn("no mobile base",
+                              commands.step_commands(step, self.sim)["note"])
+        # with a robot IP set, the real target drives again
+        real = targets.real_config({"REAL_ROBOT_IP": "192.168.100.1"})
+        self.assertNotIn("no mobile base",
+                         commands.step_commands(m["steps"][0], real)["note"])
 
     def test_drive_on_the_user_topic_shows_the_control_handshake(self):
         """Overriding the topic to /robot/cmd_vel_user needs control mode

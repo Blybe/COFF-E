@@ -22,6 +22,17 @@ POLL_PERIOD = 0.25      # s between angle polls while connected
 RECONNECT_PERIOD = 8.0  # s between connect attempts while disconnected
 
 
+def controller_error_text(code):
+    """'controller error C2: The Emergency IO of the Control Box is triggered'
+    - the SDK's own description of a controller error code."""
+    try:
+        from xarm.core.config.x_code import ControllerErrorCodeMap
+        title = ControllerErrorCodeMap.get(code, {}).get("en", {}).get("title", "")
+    except Exception:
+        title = ""
+    return f"controller error C{code}" + (f": {title}" if title else "")
+
+
 class Arm:
     def __init__(self, host="192.168.100.200", log=print, sleep=time.sleep):
         self.host = (host or "").strip()
@@ -32,6 +43,7 @@ class Arm:
         self._angles = None   # list of 6 joint angles in degrees
         self._state = "disconnected"  # disconnected / connecting / ready / error
         self._error = ""
+        self._fault = ""      # the controller's error, e.g. an emergency stop
         self._thread = None
         if not self.host:
             self._state = "not configured"
@@ -88,17 +100,40 @@ class Arm:
         api.set_state(0)  # 0 = ready
         with self._lock:
             self._api = api
-        self._set_state("ready", f"connected to the simulated xArm at {self.host}")
+        self._set_state("ready", f"connected to the xArm at {self.host}")
 
     def _poll(self):
+        # Query the angles instead of reading api.angles: that cache is filled
+        # by the SDK's report stream, which on the real xArm stayed at all-zero
+        # on a long-lived connection while the arm stood at J2 -90 / J5 90.
         with self._lock:
-            angles = self._api.angles if self._api else None
+            if self._api is None:
+                return
+            # A restarted control box (or arm simulation) closes the socket;
+            # the SDK then keeps answering with its last values instead of
+            # failing, so the monitor has to reconnect by itself.
+            if not self._api.connected:
+                raise RuntimeError("the control box closed the connection")
+            code, angles = self._api.get_servo_angle()
+            err_code, codes = self._api.get_err_warn_code()
         # The SDK reports 7 values for an xArm 6 (6 joints + a gripper slot);
         # the orchestrator only cares about the 6 joints.
-        if angles:
+        if code == 0 and angles:
             self._angles = [float(a) for a in list(angles)[:6]]
+        if err_code == 0:
+            fault = controller_error_text(codes[0]) if codes and codes[0] else ""
+            if fault != self._fault:
+                self._fault = fault
+                if fault:
+                    self._set_state("error", fault)
+                else:
+                    self._set_state("ready", f"connected to the xArm at {self.host}")
 
     # ------------------------------------------------------------ engine
+
+    def fault(self):
+        """The controller error that blocks motion ("" when there is none)."""
+        return self._fault
 
     def angles(self):
         """List of joint angles in degrees, or None when disconnected."""

@@ -12,6 +12,10 @@ engine together and serves the dashboard.
                     or {"doc": {...}, "file": "x.yaml"} - start the mission
                     from the step editor without saving it first
   POST /api/abort    abort the running mission
+  POST /api/park     {"target": "both"} - clean up: every arm of the target
+                    back to the standard position (a built-in mission)
+  POST /api/home     {"target": "both"} - clean up: the Avular back to the
+                    home waypoint (CEREBRA_SPAWN), arms parked first
   GET  /api/mission/<file>   the mission file as written, for the editor
   POST /api/validate {"doc": {...}} - check an edited mission
   POST /api/save     {"file": "x.yaml", "doc": {...}} - write a mission file
@@ -222,6 +226,33 @@ def abort():
     engine.abort()
     log("[dashboard] abort requested")
     return jsonify(ok=True)
+
+
+def _start_builtin(build, label):
+    data = request.get_json(silent=True) or {}
+    target = data.get("target") or targets.SIM
+    if target not in targets.TARGETS:
+        return jsonify(error=f"target must be one of {', '.join(targets.TARGETS)}"), 400
+    try:
+        mission = build(target)
+        run_id = engine.start(mission, mission_file=label)
+    except mission_model.MissionError as exc:
+        return jsonify(error=str(exc)), 400
+    except RuntimeError as exc:
+        return jsonify(error=str(exc)), 409
+    log(f"[dashboard] {label} on {target}")
+    return jsonify(ok=True, run_id=run_id)
+
+
+@app.post("/api/park")
+def park():
+    return _start_builtin(mission_model.park_arms_mission, "(park arms)")
+
+
+@app.post("/api/home")
+def home():
+    waypoint = os.environ.get("CEREBRA_SPAWN", "Home")
+    return _start_builtin(lambda t: mission_model.home_mission(t, waypoint), "(avular home)")
 
 
 def main():
