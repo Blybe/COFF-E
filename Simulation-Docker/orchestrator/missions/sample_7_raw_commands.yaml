@@ -1,0 +1,69 @@
+# SAMPLE 7 - Raw ROS commands (the RAW button, in a mission file)
+# Every step can be opened as the messages the orchestrator sends: the RAW
+# button next to a step shows the ros2 command lines for the simulation AND
+# for the real robots, with a copy button - so the same mission can be run by
+# hand on the real Avular Origin One and the real xArm 6.
+#
+# This sample is what the raw editor can do:
+#   - a "command" step: free text, run in the orchestrator container with ROS 2
+#     sourced (sim_run / real_run give a per-target variant)
+#   - ros: { ... } on a drive/goto step: the raw fields of the message
+#     (topic, publish rate, the Twist fields, the goal action/frame/pose)
+#   - arm: { ... } on an arm step: the raw xArm SDK options (acceleration, wait)
+#
+# Everything here runs on the simulation only (target: sim). Switch "Run on" to
+# real (or both) in the dashboard to send the same commands to the robots; the
+# RAW button then shows what changes (control mode USER, /robot/cmd_vel_user,
+# the autopilot behavior instead of Nav2, and the real arm).
+
+name: "Sample: raw ROS commands (edit these for the real robots)"
+target: sim
+require_arm_tucked: true
+
+steps:
+  - name: "Raw: how many topics does the orchestrator see?"
+    type: command
+    run: "ros2 topic list | wc -l"
+    expect: 0
+    timeout: 20
+
+  - name: "Arm: fold in (raw SDK acceleration)"
+    type: arm_pose
+    pose: transport
+    speed: 40
+    arm: {acc: 300}
+    check: {tolerance_deg: 3}
+
+  - name: "Drive 5 s with the raw Twist fields spelled out"
+    type: drive
+    duration: 5
+    linear: 0.25
+    angular: 0.0
+    ros:
+      rate: 5                 # publish at 5 Hz instead of the default 10
+      linear: {y: 0.0, z: 0.0}
+      angular: {x: 0.0, y: 0.0}
+    check: {min_distance: 0.4}
+
+  - name: "Drive back on the USER topic (how the real robot is driven)"
+    type: drive
+    duration: 5
+    linear: -0.25
+    # The Origin One only drives from /robot/cmd_vel_user in control mode USER.
+    # The simulation implements the same interface, so this is the real command
+    # path, tested without hardware: the orchestrator takes control, publishes,
+    # and gives control back (see the RAW button).
+    ros: {topic: "/robot/cmd_vel_user"}
+    check: {min_distance: 0.4}
+
+  - name: "Raw: per-target command (safe to read on the real robot too)"
+    type: command
+    sim_run: "echo 'simulation: nothing to check here'"
+    real_run: "ros2 topic list | head -5"
+    timeout: 30
+
+  - name: "Raw: publish a zero Twist by hand (and check the exit code)"
+    type: command
+    run: 'ros2 topic pub --once /robot/cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0}, angular: {z: 0.0}}"'
+    expect: 0
+    timeout: 20

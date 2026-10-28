@@ -21,9 +21,27 @@ Step types:
   arm_pose   move the xArm 6 to a named pose (see ARM_POSES, or the
              mission's own arm_poses), e.g. "transport" before driving
   wait       do nothing for <duration> seconds
+  command    run a raw shell command in the orchestrator container (ROS 2 is
+             sourced first), e.g. a `ros2 topic pub` or a service call that
+             has no step type of its own. run = both targets, or sim_run /
+             real_run for a per-target variant; expect = the exit code that
+             counts as success (0)
 
-Mission options for the arm mounted on the robot:
+Raw overrides (the dashboard's raw editor): a drive step takes
+ros: {topic, rate, linear: {x, y, z}, angular: {x, y, z}} and a goto step takes
+ros: {action, frame, x, y, z, yaw} - the message the orchestrator sends, with
+the fields it actually publishes. An arm step takes arm: {acc, wait} (the raw
+xArm SDK options next to the structured angles and speed). The message *type*
+is fixed: the orchestrator publishes typed messages, so use a command step to
+send anything else.
 
+Mission options:
+
+  target:              sim | real | both - where the mission runs (default
+                       sim; see targets.py). "real" drives the real Avular
+                       Origin One (control mode USER + /robot/cmd_vel_user)
+                       and the real xArm, "both" sends everything to both and
+                       checks the simulation
   arm_poses:           {name: [6 angles]} - extra or changed named poses
   require_arm_tucked:  true - every drive/goto step first checks that the
                        arm is in the "transport" pose, and fails otherwise
@@ -53,7 +71,22 @@ import json
 import os
 import re
 
-STEP_TYPES = ("drive", "goto", "arm_joint", "arm_home", "arm_pose", "wait")
+STEP_TYPES = ("drive", "goto", "arm_joint", "arm_home", "arm_pose", "wait", "command")
+
+# Where a mission runs: the simulation, the real robots, or both (targets.py).
+# "sim" is the default, so a mission file stays portable.
+TARGETS = ("sim", "real", "both")
+
+CMD_RATE = 10.0          # Hz drive steps publish at, unless the step overrides it
+COMMAND_TIMEOUT = 30.0   # s a "command" step may take, unless it sets its own
+
+# Raw overrides: the fields of the message the orchestrator sends, which the
+# dashboard step editor can change without leaving the step model.
+ROS_OVERRIDE_KEYS = {
+    "drive": ("topic", "rate", "linear", "angular"),
+    "goto": ("action", "frame", "x", "y", "z", "yaw"),
+}
+ARM_OVERRIDE_KEYS = ("acc", "wait")
 
 ARM_JOINTS = 6  # xArm 6
 
@@ -106,6 +139,69 @@ def _check_unknown_keys(step, known, ctx):
         raise MissionError(f"{ctx}: unknown option(s) {', '.join(unknown)}")
 
 
+def _ros_override(raw, ctx, stype):
+    """The raw ROS override of a step, or None when it has none.
+
+    drive:  {topic, rate, linear: {x, y, z}, angular: {x, y, z}}
+    goto:   {action, frame, x, y, z, yaw}
+    """
+    ros = raw.get("ros")
+    if ros is None:
+        return None
+    if not isinstance(ros, dict):
+        raise MissionError(f"{ctx}: ros must be a mapping of raw message fields")
+    unknown = sorted(set(ros) - set(ROS_OVERRIDE_KEYS[stype]))
+    if unknown:
+        raise MissionError(f"{ctx}: unknown ros option(s) {', '.join(unknown)}")
+    out = {}
+    for key in ("topic", "action", "frame"):
+        if key in ros:
+            value = ros[key]
+            if not isinstance(value, str) or not value.strip():
+                raise MissionError(f"{ctx}: ros.{key} must be a non-empty string")
+            out[key] = value.strip()
+    if "rate" in ros:
+        out["rate"] = _number(ros["rate"], "ros.rate", ctx)
+        if out["rate"] <= 0:
+            raise MissionError(f"{ctx}: ros.rate must be > 0")
+    for key in ("x", "y", "z", "yaw"):
+        if key in ros:
+            out[key] = _number(ros[key], f"ros.{key}", ctx)
+    for key in ("linear", "angular"):
+        if key in ros:
+            vector = ros[key]
+            if not isinstance(vector, dict):
+                raise MissionError(f"{ctx}: ros.{key} must be a mapping of x, y and z")
+            bad = sorted(set(vector) - {"x", "y", "z"})
+            if bad:
+                raise MissionError(f"{ctx}: unknown ros.{key} field(s) {', '.join(bad)}")
+            out[key] = {k: _number(v, f"ros.{key}.{k}", ctx) for k, v in vector.items()}
+    return out
+
+
+def _arm_override(raw, ctx):
+    """The raw xArm SDK override of an arm step: {acc, wait}. The angles and
+    the speed are structured fields of the step itself."""
+    arm = raw.get("arm")
+    if arm is None:
+        return None
+    if not isinstance(arm, dict):
+        raise MissionError(f"{ctx}: arm must be a mapping of SDK options")
+    unknown = sorted(set(arm) - set(ARM_OVERRIDE_KEYS))
+    if unknown:
+        raise MissionError(f"{ctx}: unknown arm option(s) {', '.join(unknown)}")
+    out = {}
+    if "acc" in arm:
+        out["acc"] = _number(arm["acc"], "arm.acc", ctx)
+        if out["acc"] <= 0:
+            raise MissionError(f"{ctx}: arm.acc must be > 0")
+    if "wait" in arm:
+        if not isinstance(arm["wait"], bool):
+            raise MissionError(f"{ctx}: arm.wait must be true or false")
+        out["wait"] = arm["wait"]
+    return out
+
+
 def _normalize_step(raw, index, poses=None):
     step = _normalize_step_fields(raw, index, poses if poses is not None else ARM_POSES)
     # The step exactly as written, so the dashboard editor can show and edit
@@ -131,12 +227,16 @@ def _normalize_step_fields(raw, index, poses):
 
     if stype == "drive" or stype == "wait":
         _check_unknown_keys(raw, ("type", "name", "timeout", "duration", "linear", "angular",
-                                  "check"), ctx)
+                                  "check", "ros"), ctx)
         step["duration"] = _number(raw.get("duration"), "duration", ctx)
         if step["duration"] <= 0:
             raise MissionError(f"{ctx}: duration must be > 0")
         if stype == "wait":
+            if raw.get("ros") is not None:
+                raise MissionError(f"{ctx}: a wait step sends no ROS message, so it has "
+                                   "no ros override")
             return step
+        step["ros"] = _ros_override(raw, ctx, stype)
         step["linear"] = _number(raw.get("linear", 0.0), "linear", ctx)
         step["angular"] = _number(raw.get("angular", 0.0), "angular", ctx)
         check = raw.get("check") or {}
@@ -151,7 +251,9 @@ def _normalize_step_fields(raw, index, poses):
             raise MissionError(f"{ctx}: check.min_distance must be >= 0")
 
     elif stype == "goto":
-        _check_unknown_keys(raw, ("type", "name", "timeout", "waypoint", "x", "y", "yaw"), ctx)
+        _check_unknown_keys(raw, ("type", "name", "timeout", "waypoint", "x", "y", "yaw",
+                                  "ros"), ctx)
+        step["ros"] = _ros_override(raw, ctx, stype)
         waypoint = raw.get("waypoint")
         if waypoint is not None:
             if not isinstance(waypoint, str):
@@ -171,7 +273,8 @@ def _normalize_step_fields(raw, index, poses):
     elif stype in ("arm_joint", "arm_home", "arm_pose"):
         _check_unknown_keys(
             raw, ("type", "name", "timeout", "angles", "joint", "angle_deg", "speed",
-                  "check", "pose"), ctx)
+                  "check", "pose", "arm"), ctx)
+        step["arm"] = _arm_override(raw, ctx)
         if stype != "arm_pose" and raw.get("pose") is not None:
             raise MissionError(f"{ctx}: pose only belongs to an arm_pose step")
         step["speed"] = _number(raw.get("speed", 30), "speed", ctx)
@@ -224,6 +327,26 @@ def _normalize_step_fields(raw, index, poses):
                     raise MissionError(f"{ctx}: angle_deg is required with joint")
                 step["angles"] = [None] * ARM_JOINTS
                 step["angles"][joint - 1] = angle
+
+    elif stype == "command":
+        _check_unknown_keys(
+            raw, ("type", "name", "timeout", "run", "sim_run", "real_run", "expect"), ctx)
+        for key in ("run", "sim_run", "real_run"):
+            line = raw.get(key)
+            if line is None:
+                step[key] = None
+                continue
+            if not isinstance(line, str) or not line.strip():
+                raise MissionError(f"{ctx}: {key} must be a non-empty command")
+            step[key] = line.strip()
+        if not any(step[key] for key in ("run", "sim_run", "real_run")):
+            raise MissionError(f"{ctx}: a command step needs run, sim_run or real_run")
+        expect = raw.get("expect", 0)
+        if isinstance(expect, bool) or not isinstance(expect, int):
+            raise MissionError(f"{ctx}: expect must be a whole number (the exit code to expect)")
+        step["expect"] = expect
+        if step["timeout"] is None:
+            step["timeout"] = COMMAND_TIMEOUT
     return step
 
 
@@ -231,7 +354,8 @@ def normalize_mission(data, origin="mission"):
     """Validate a parsed mission document and fill in all defaults."""
     if not isinstance(data, dict):
         raise MissionError(f"{origin}: must be a mapping with 'name' and 'steps'")
-    unknown = sorted(set(data) - {"name", "clock", "steps", "arm_poses", "require_arm_tucked"})
+    unknown = sorted(set(data) - {"name", "clock", "steps", "arm_poses", "require_arm_tucked",
+                                  "target"})
     if unknown:
         raise MissionError(f"{origin}: unknown option(s) {', '.join(unknown)}")
     poses = dict(ARM_POSES)
@@ -249,6 +373,10 @@ def normalize_mission(data, origin="mission"):
     clock = data.get("clock", "sim")
     if clock not in ("sim", "wall"):
         raise MissionError(f"{origin}: clock must be 'sim' or 'wall', got {clock!r}")
+    target = data.get("target", "sim")
+    if target not in TARGETS:
+        raise MissionError(
+            f"{origin}: target must be one of {', '.join(TARGETS)}, got {target!r}")
     raw_steps = data.get("steps")
     if not isinstance(raw_steps, list) or not raw_steps:
         raise MissionError(f"{origin}: 'steps' must be a non-empty list")
@@ -258,6 +386,7 @@ def normalize_mission(data, origin="mission"):
     return {
         "name": str(data.get("name") or "unnamed mission"),
         "clock": clock,
+        "target": target,
         "require_arm_tucked": tucked,
         "poses": poses,
         "arm_poses_doc": copy.deepcopy(extra),  # as written, for the editor
@@ -292,6 +421,8 @@ def clean_doc(doc):
     out = {"name": doc.get("name") or "unnamed mission"}
     if doc.get("clock", "sim") != "sim":
         out["clock"] = doc["clock"]
+    if doc.get("target", "sim") != "sim":
+        out["target"] = doc["target"]
     if doc.get("require_arm_tucked"):
         out["require_arm_tucked"] = doc["require_arm_tucked"]
     if doc.get("arm_poses"):

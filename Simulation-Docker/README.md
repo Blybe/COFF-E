@@ -9,7 +9,7 @@ tested before the real hardware is available:
 | **Nav2 + RViz** (path planning) | Navigation 2 stack on the Cerebra map (same image, second container) | RViz in the browser: <http://localhost:6081> |
 | **UFACTORY xArm 6** (robot arm) | UFACTORY Studio + simulated xArm 6 firmware (official UFACTORY Docker image) | UFACTORY Studio web UI: <http://localhost:18333> |
 
-| **COFF-E orchestrator** (mission dashboard) | Runs checked missions on both sims: drive → arm → drive, stopping on the first failed check | Dashboard: <http://localhost:8080> |
+| **COFF-E orchestrator** (mission dashboard) | Runs checked missions on both sims: drive → arm → drive, stopping on the first failed check. Every step can be opened as the raw ROS commands it sends (per target) and edited; a mission can also run on the **real** Origin One and xArm 6 | Dashboard: <http://localhost:8080> |
 
 Everything runs from one `docker compose up -d --build`, on Windows, macOS or
 Linux. Nothing ROS-related needs to be installed on the host.
@@ -21,6 +21,12 @@ in `orchestrator/missions/` (including `sample_*.yaml` ideas for the arm
 mounted on the robot); the dashboard also shows Gazebo, RViz and UFACTORY
 Studio live. The orchestrator unit tests run with
 `py -m unittest tests/test_orchestrator.py`.
+
+Missions can also be sent to the **real** robots: switch **Run on** to
+`Real` (or `Both`), and start the zenoh bridge that connects the orchestrator
+to the robot's own ROS 2 network with
+`docker compose --profile real up -d` (see [MISSION_GUIDE.md](MISSION_GUIDE.md),
+part 8).
 
 ## Folder contents
 
@@ -432,10 +438,14 @@ This stack covers the simulation part of building blocks A and B from
   on the exact map the real Origin One drives on, and the whole team sees
   the same data with or without Cerebra Studio.
 
-Later, a COFF-E orchestrator container can be added to the same
-`docker-compose.yml` and talk to all services over the compose network
-(Origin One sim at `192.168.100.10`, Nav2 at `192.168.100.11`, xArm at
-`192.168.100.200`).
+The orchestrator container in the same `docker-compose.yml` ties them
+together over the compose network (Origin One sim at `192.168.100.10`, Nav2 at
+`192.168.100.11`, xArm at `192.168.100.200`). It speaks the **same interfaces
+as the real robots** - Avular's `cmd_vel_controller` (control mode USER +
+`/robot/cmd_vel_user`) and the autopilot behavior service, plus the xArm SDK -
+so a mission that passes here can be run on the hardware with `Run on: Real`.
+The zenoh bridge service (`--profile real`) is the connection to the robot's
+own ROS 2 network.
 
 ## Sources
 

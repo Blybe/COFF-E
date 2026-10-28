@@ -206,6 +206,23 @@ services:
       CEREBRA_SCENE: "/tmp/cerebra/scene.json"
       MISSIONS_DIR: "/missions"
       DASHBOARD_PORT: "8080"
+      # Where the commands go: the simulation, the real robots or both
+      # (see orchestrator/targets.py). With SIM_DRIVE_MODE=user the simulation
+      # is driven exactly like the real robot (control mode USER +
+      # /robot/cmd_vel_user), which is the way to test the real command path.
+      SIM_DRIVE_MODE: "${SIM_DRIVE_MODE:-direct}"
+      SIM_ROS_DOMAIN_ID: "${SIM_ROS_DOMAIN_ID:-0}"
+      # Real Avular Origin One + xArm 6: their own ROS 2 domain, reached
+      # through the zenoh bridge (compose profile "real").
+      REAL_ROS_DOMAIN_ID: "${REAL_ROS_DOMAIN_ID:-42}"
+      REAL_CMD_VEL_TOPIC: "${REAL_CMD_VEL_TOPIC:-/robot/cmd_vel_user}"
+      REAL_MODE_SERVICE: "${REAL_MODE_SERVICE:-/robot/cmd_vel_controller/set_control_mode}"
+      REAL_MODE_RESET_SERVICE: "${REAL_MODE_RESET_SERVICE:-/robot/cmd_vel_controller/reset_control_mode}"
+      REAL_CONTROL_MODE: "${REAL_CONTROL_MODE:-30}"
+      REAL_ODOM_TOPIC: "${REAL_ODOM_TOPIC:-/robot/odom}"
+      REAL_POSE_TOPIC: "${REAL_POSE_TOPIC:-/autopilot/estimated_pose}"
+      REAL_BEHAVIOR_SERVICE: "${REAL_BEHAVIOR_SERVICE:-/autopilot/information_manager/set_and_execute_behaviors}"
+      REAL_XARM_HOST: "${REAL_XARM_HOST:-}"
     ports:
       # Mission dashboard (bound to localhost only)
       - "127.0.0.1:8080:8080"
@@ -226,6 +243,8 @@ services:
       - |
         set -e
         source /opt/ros/humble/setup.bash
+        # Avular messages (control mode + autopilot behaviors) for the real robot
+        source /opt/avular_msgs/install/setup.bash
         if [ -n "$$CEREBRA_MAP" ]; then
           python3 /coffe/tools/cerebra_import.py --data /cerebra --map "$$CEREBRA_MAP" \
             --spawn "$$CEREBRA_SPAWN" --mode nav --out /tmp/cerebra
@@ -234,6 +253,33 @@ services:
     networks:
       coffe-net:
         ipv4_address: 192.168.100.12
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # 4) zenoh bridge to the real Avular Origin One (compose profile "real")
+  # ---------------------------------------------------------------------------
+  # The Origin's ROS 2 network is a local network on the robot; the bridge is
+  # how a computer joins it (see the Avular getting-started guide: the robot
+  # runs zenoh-bridge-ros2dds 1.0.3). This container bridges that network into
+  # the orchestrator's "real" ROS 2 domain, so the orchestrator can publish
+  # /robot/cmd_vel_user and call the autopilot services there.
+  #
+  # Start it with:  docker compose --profile real up -d
+  # Requires REAL_ROBOT_IP in .env (the robot's IP, or its access-point IP).
+  zenoh-bridge:
+    image: eclipse/zenoh-bridge-ros2dds:${ZENOH_BRIDGE_TAG:-1.0.3}
+    container_name: coffe-zenoh-bridge
+    profiles: ["real"]
+    environment:
+      ROS_DOMAIN_ID: "${REAL_ROS_DOMAIN_ID:-42}"
+    command:
+      - -m
+      - client
+      - -e
+      - "tcp/${REAL_ROBOT_IP:-192.168.100.1}:7447"
+    networks:
+      coffe-net:
+        ipv4_address: 192.168.100.13
     restart: unless-stopped
 
 networks:

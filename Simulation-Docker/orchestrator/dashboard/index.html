@@ -173,6 +173,35 @@
   .acts button { padding: 2px 8px; font-size: 12px; }
   .addbar { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; align-items: center; }
   .addbar button { padding: 4px 10px; font-size: 12px; }
+
+  /* raw ROS commands of a step (the RAW button) */
+  .step .rawbtn { font-size: 11px; padding: 0 6px; border-radius: 4px; flex: 0 0 auto; }
+  .step .rawbtn.on { border-color: var(--warn); background: #3a2f16; color: #ffd79a; }
+  .rawpanel { margin: 8px 0 2px 28px; display: grid; gap: 8px; }
+  .rawblock { background: #0b0e12; border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+  .rawblock.active { border-color: var(--accent); }
+  .rawhead { display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--dim); margin-bottom: 5px; flex-wrap: wrap; }
+  .rawhead .grow { flex: 1; }
+  .rawblock pre, .rawalt pre {
+    margin: 0; font: 11.5px/1.5 Consolas, "Cascadia Mono", monospace;
+    white-space: pre-wrap; word-break: break-word; color: #cfe6ff;
+  }
+  .rawalt { margin-top: 6px; border-top: 1px dashed var(--line); padding-top: 6px; }
+  .rawalt .t { font-size: 11px; color: var(--dim); display: flex; gap: 8px; align-items: center; margin-bottom: 4px; }
+  .rawalt .t .grow { flex: 1; }
+  .rawnote { font-size: 11px; color: var(--dim); margin-top: 5px; }
+  .copy { font-size: 11px; padding: 1px 7px; border-radius: 4px; }
+  .raw-ovr { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; display: grid; gap: 6px; }
+  .raw-ovr .t { font-size: 11px; color: var(--warn); text-transform: uppercase; letter-spacing: .5px; }
+  .form textarea {
+    background: #0b0e12; padding: 4px 8px; width: 100%; min-width: 0; resize: vertical;
+    font: 12px/1.4 Consolas, "Cascadia Mono", monospace; color: var(--text);
+    border: 1px solid var(--line); border-radius: 6px;
+  }
+  .form .hint { font-size: 11px; color: var(--dim); }
+  .runon { display: inline-flex; gap: 4px; align-items: center; font-size: 12px; color: var(--dim); }
+  .runon button { padding: 3px 10px; font-size: 12px; }
+  .runon button.on { border-color: var(--warn); background: #3a2f16; color: #ffd79a; }
   @media (max-width: 1150px) {
     main { grid-template-columns: 1fr 1fr; grid-template-rows: auto auto auto 190px;
            grid-template-areas: "view view" "steps robot" "steps arm" "log log"; }
@@ -193,6 +222,12 @@
     <button id="start" class="primary" title="Runs the mission as it is in the step editor">Start mission</button>
     <button id="abort" class="danger" disabled>Abort</button>
   </div>
+  <span class="runon" title="Where this mission runs; saved with the mission file (see the MISSION_GUIDE)">
+    Run on:
+    <button data-target="sim" title="The two simulation containers">Sim</button>
+    <button data-target="real" title="The real Avular Origin One and the real xArm 6">Real</button>
+    <button data-target="both" title="Both at once: the same commands go to the simulation and to the real robots">Both</button>
+  </span>
   <span id="state" class="pill idle">IDLE</span>
   <div class="chips">
     <span class="chip" title="Is the Origin One simulation publishing /robot/odom?">
@@ -203,6 +238,7 @@
     </span>
     <span class="chip" id="sim-chip" title="Gazebo sim time vs real time (0.5 = the sim runs at half speed)">sim —</span>
     <span class="chip" id="map-chip" title="Loaded Cerebra map"></span>
+    <span id="target-chips" title="The real robots: are they reachable, and is this mission using them?"></span>
     <span class="chip"><a href="#view-panel" id="live-link" title="Show the simulators live, inside this page">▶ Live view</a> · open in a tab:
       <a href="http://localhost:6080/vnc.html?autoconnect=true&resize=scale" target="_blank">Gazebo</a>
       <a href="http://localhost:6081/vnc.html?autoconnect=true&resize=scale" target="_blank">RViz</a>
@@ -231,6 +267,7 @@
       <button data-add="xarm">+ xArm 6</button>
       <button data-add="pose">+ Arm pose</button>
       <button data-add="wait">+ Wait</button>
+      <button data-add="raw" title="A raw shell command: anything the step types do not cover (ros2 CLI, a service call, the xArm SDK)">+ Raw command</button>
     </div>
   </section>
 
@@ -355,14 +392,20 @@ function renderReason(mission) {
 // The editor holds the mission as written in the file (raw steps). While a
 // mission started from here runs, the editor and the engine use the same
 // step indexes, so the live status is drawn straight onto the edited steps.
-const DEVICE_TYPES = { avular: ["drive", "goto"], xarm: ["arm_joint", "arm_pose", "arm_home"], wait: ["wait"] };
-const DEVICE_NAME = { avular: "Avular Origin One", xarm: "xArm 6", wait: "Wait" };
-const DEVICE_BADGE = { avular: "AVULAR", xarm: "XARM", wait: "WAIT" };
-const TYPE_LABEL = { drive: "Drive for a time", goto: "Navigate with Nav2", arm_joint: "Move joints", arm_pose: "Named pose (transport, serve, ...)", arm_home: "Home position", wait: "Wait" };
-const ed = { doc: null, file: "", saved: "", open: -1, runId: null, error: "", errStep: -1, liveMsg: "", renderedLock: -2, loading: false };
+const DEVICE_TYPES = { avular: ["drive", "goto"], xarm: ["arm_joint", "arm_pose", "arm_home"], wait: ["wait"], raw: ["command"] };
+const DEVICE_NAME = { avular: "Avular Origin One", xarm: "xArm 6", wait: "Wait", raw: "Raw command" };
+const DEVICE_BADGE = { avular: "AVULAR", xarm: "XARM", wait: "WAIT", raw: "RAW" };
+const TYPE_LABEL = { drive: "Drive for a time", goto: "Navigate (Nav2 on the sim, autopilot on the real robot)", arm_joint: "Move joints", arm_pose: "Named pose (transport, serve, ...)", arm_home: "Home position", wait: "Wait", command: "Raw command" };
+const TARGET_LABEL = { sim: "Simulation", real: "Real robots", both: "Simulation + real" };
+const ed = { doc: null, file: "", saved: "", open: -1, runId: null, error: "", errStep: -1, liveMsg: "", renderedLock: -2, loading: false, rawFor: -1, cmds: null, cmdsSig: "" };
 let validateTimer = null;
 
-function deviceOf(type) { return type === "wait" ? "wait" : String(type).startsWith("arm") ? "xarm" : "avular"; }
+function deviceOf(type) {
+  if (type === "wait") return "wait";
+  if (type === "command") return "raw";
+  return String(type).startsWith("arm") ? "xarm" : "avular";
+}
+function targetOf(doc) { return (doc && doc.target) || "sim"; }
 function dirty() { return ed.doc && JSON.stringify(ed.doc) !== ed.saved; }
 function poseNames() {
   return Object.keys(Object.assign({}, (latest && latest.arm_poses) || { transport: 1 }, (ed.doc && ed.doc.arm_poses) || {}));
@@ -374,6 +417,9 @@ function poseInfo(name) {
   return (info[name] || "") + (angles ? ` (${angles.join("°, ")}°)` : "");
 }
 function waypointNames() { return ((latest && latest.robot.waypoints) || []).map(w => w.name); }
+function targetInfo(name) { return (latest && latest.targets && latest.targets[name]) || null; }
+function simCfg() { return targetInfo("sim") || {}; }
+function realCfg() { return targetInfo("real") || {}; }
 
 function linkedRunning() {
   const m = latest && latest.mission;
@@ -388,6 +434,8 @@ function defaultStep(type) {
     case "arm_joint": return { name: "Arm: joint 1 to 90 degrees", type, joint: 1, angle_deg: 90, speed: 30, check: { tolerance_deg: 3 } };
     case "arm_home": return { name: "Arm: back to home", type, speed: 30 };
     case "arm_pose": return { name: "Arm: fold into the transport pose", type, pose: "transport", speed: 40 };
+    case "command": return { name: "Raw ROS command", type, expect: 0,
+      run: 'ros2 topic pub --once /robot/cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0}}"' };
     default: return { name: "Wait 5 s", type: "wait", duration: 5 };
   }
 }
@@ -414,6 +462,11 @@ function summary(s) {
     case "arm_home": return `all joints to 0° at ${s.speed ?? 30}°/s`;
     case "arm_pose": return `pose "${s.pose}" at ${s.speed ?? 30}°/s · check: ±${(s.check && s.check.tolerance_deg) ?? 3}°`;
     case "wait": return `wait ${n(s.duration)} s`;
+    case "command": {
+      const line = String(s.run || s.sim_run || s.real_run || "").split("\n")[0].trim();
+      const variants = (s.sim_run || s.real_run) ? " · per-target variant" : "";
+      return `raw: ${line.length > 64 ? line.slice(0, 64) + "…" : line}${variants}`;
+    }
   }
   return String(s.type);
 }
@@ -422,6 +475,11 @@ function summary(s) {
 function fld(label, path, value, attrs) {
   const v = value === undefined || value === null ? "" : escapeHtml(value);
   return `<label><span>${label}</span><input data-path="${path}" value="${v}" ${attrs || ""}></label>`;
+}
+function area(label, path, value, dis, placeholder) {
+  const v = value === undefined || value === null ? "" : escapeHtml(value);
+  return `<label><span>${label}</span><textarea data-path="${path}" rows="2" spellcheck="false"
+    ${placeholder ? `placeholder="${placeholder}"` : ""} ${dis}>${v}</textarea></label>`;
 }
 function num(label, path, value, unit, dis, placeholder) {
   return fld(`${label}${unit ? ` <span class="muted">(${unit})</span>` : ""}`, path, value,
@@ -500,8 +558,19 @@ function stepForm(s, i, lock) {
     case "wait":
       h += num("Duration", "duration", s.duration, "s", dis);
       break;
+    case "command": {
+      h += `<div class="hint">Runs in the orchestrator container with ROS 2 sourced (bash -lc),
+        on the ROS domain of the target. Use the per-target fields for a variant (leave them empty
+        to run the shared command); the RAW button shows exactly what will run.</div>`;
+      h += area("Command", "run", s.run, dis, "ros2 topic list");
+      h += area("Simulation only", "sim_run", s.sim_run, dis, "empty = use the shared command");
+      h += area("Real robots only", "real_run", s.real_run, dis, "empty = use the shared command");
+      h += num("Expected exit code", "expect", s.expect, "", dis, "0");
+      break;
+    }
   }
   h += num("Timeout", "timeout", s.timeout, "real s", dis, "automatic");
+  h += rawOverrideForm(s, dis);
   const last = ed.doc.steps.length - 1;
   const canInsert = i >= lock;
   h += `<div class="acts">
@@ -514,6 +583,53 @@ function stepForm(s, i, lock) {
     <button data-act="close">Close</button></div>`;
   if (locked) h += `<div class="muted">This step already ran or is running, so it is locked.</div>`;
   return h;
+}
+
+// The raw overrides: the fields of the message the orchestrator actually
+// sends. Everything left empty keeps the structured value above (and the
+// default of the target), so a step stays readable and the RAW button shows
+// the same message that goes out.
+function rawOverrideForm(s, dis) {
+  const ros = s.ros || {};
+  if (s.type === "drive") {
+    const lin = ros.linear || {}, ang = ros.angular || {};
+    return `<div class="raw-ovr"><div class="t">Raw ROS message (override)</div>` +
+      fld("Topic", "ros.topic", ros.topic, `${dis} placeholder="${simCfg().cmd_vel_topic || "/robot/cmd_vel"}"`) +
+      num("Publish rate", "ros.rate", ros.rate, "Hz", dis, "10") +
+      num("Twist linear.y", "ros.linear.y", lin.y, "m/s", dis) +
+      num("Twist linear.z", "ros.linear.z", lin.z, "m/s", dis) +
+      num("Twist angular.x", "ros.angular.x", ang.x, "rad/s", dis) +
+      num("Twist angular.y", "ros.angular.y", ang.y, "rad/s", dis) +
+      `<div class="hint">geometry_msgs/msg/Twist on ${escapeHtml(simCfg().cmd_vel_topic || "/robot/cmd_vel")} (simulation) /
+        ${escapeHtml(realCfg().cmd_vel_topic || "/robot/cmd_vel_user")} (real robot). linear.x and angular.z are the
+        Speed and Turn rate above; empty fields stay 0.</div></div>`;
+  }
+  if (s.type === "goto") {
+    return `<div class="raw-ovr"><div class="t">Raw goal (override)</div>` +
+      fld("Action / service", "ros.action", ros.action, `${dis} placeholder="${simCfg().nav_name || "/navigate_to_pose"}"`) +
+      fld("Frame", "ros.frame", ros.frame, `${dis} placeholder="map"`) +
+      num("Goal x", "ros.x", ros.x, "m", dis, "from the target above") +
+      num("Goal y", "ros.y", ros.y, "m", dis, "from the target above") +
+      num("Goal z", "ros.z", ros.z, "m", dis, "0") +
+      num("Goal yaw", "ros.yaw", ros.yaw, "rad", dis, "from the target above") +
+      `<div class="hint">Simulation: a Nav2 ${escapeHtml(simCfg().nav_name || "/navigate_to_pose")} goal.
+        Real robot: a MOVE_THROUGH_POSES behavior for the autopilot on
+        ${escapeHtml(realCfg().nav_name || "/autopilot/information_manager/set_and_execute_behaviors")}.
+        The RAW button shows both.</div></div>`;
+  }
+  if (String(s.type).startsWith("arm")) {
+    const arm = s.arm || {};
+    return `<div class="raw-ovr"><div class="t">Raw xArm SDK options</div>` +
+      num("Acceleration", "arm.acc", arm.acc, "deg/s²", dis, "SDK default") +
+      `<label><span>Wait for the move</span><select data-path="arm.wait" data-kind="bool" ${dis}>
+        <option value="" ${arm.wait === undefined ? "selected" : ""}>no, poll the angles like the orchestrator does</option>
+        <option value="true" ${arm.wait === true ? "selected" : ""}>yes, block until the arm got there</option>
+        <option value="false" ${arm.wait === false ? "selected" : ""}>no, explicitly</option>
+      </select></label>
+      <div class="hint">set_servo_angle(angle, speed, mvacc, wait) of the xArm Python SDK - the same call for the
+        simulated and the real arm.</div></div>`;
+  }
+  return "";
 }
 
 function renderEditor() {
@@ -534,6 +650,7 @@ function renderEditor() {
           <div class="idx">${i + 1}</div>
           <span class="badge ${dev}">${DEVICE_BADGE[dev]}</span>
           <div class="name">${escapeHtml(s.name || s.type)}</div>
+          <button class="rawbtn ${ed.rawFor === i ? "on" : ""}" data-act="raw" title="The raw ROS commands this step sends (simulation and real robots)">RAW</button>
           ${simForStep(s) ? `<button class="watch" data-act="watch" title="Watch this step live in the simulator">👁 watch</button>` : ""}
           <div class="icon" id="si${i}">·</div>
         </div>
@@ -542,6 +659,7 @@ function renderEditor() {
         <div class="bar"><div id="sb${i}"></div></div>
       </div>
       ${ed.open === i ? `<div class="form">${stepForm(s, i, lock)}</div>` : ""}
+      ${ed.rawFor === i ? `<div class="rawpanel">${rawPanel(i)}</div>` : ""}
     </div>`;
   }).join("");
   if (keep) {
@@ -551,6 +669,69 @@ function renderEditor() {
   renderFileInfo();
   renderBanner();
   if (latest) updateEditorStatus(latest);
+}
+
+/* ------------------------------------------- the raw ROS commands of a step */
+// Every step can be opened as the messages the orchestrator sends: the exact
+// ros2 command lines for the simulation and for the real robots, plus the xArm
+// SDK call and its xarm_ros2 equivalent. /api/commands builds them from the
+// same step model the engine uses, so what is shown is what is sent.
+async function loadCommands() {
+  if (!ed.doc) return;
+  try {
+    const res = await fetch("/api/commands", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ doc: ed.doc }),
+    });
+    const r = await res.json();
+    if (r.error) { ed.cmds = null; flash(r.error); return; }
+    ed.cmds = r;
+  } catch (err) { ed.cmds = null; flash(String(err)); }
+}
+
+function rawPanel(i) {
+  const step = ed.cmds && ed.cmds.steps[i];
+  if (!step) return `<div class="muted">building the commands…</div>`;
+  const active = targetOf(ed.doc);
+  return step.blocks.map(b => {
+    const on = active === "both" || active === b.target;
+    return `<div class="rawblock ${on ? "active" : ""}">
+      <div class="rawhead">
+        <b>${escapeHtml(TARGET_LABEL[b.target] || b.target)}</b>
+        <span class="muted">ROS domain ${b.domain_id}</span>
+        ${on ? `<span class="badge avular">THIS MISSION RUNS HERE</span>` : ""}
+        <span class="grow"></span>
+        <button class="copy" data-act="copy" data-i="${i}" data-t="${b.target}">copy</button>
+      </div>
+      <pre>${escapeHtml(b.lines.join("\n") || "(no ROS command: this step only waits)")}</pre>
+      ${(b.alternatives || []).map((a, ai) => `<div class="rawalt">
+        <div class="t"><span>${escapeHtml(a.title)}</span><span class="grow"></span>
+          <button class="copy" data-act="copy" data-i="${i}" data-t="${b.target}" data-a="${ai}">copy</button></div>
+        <pre>${escapeHtml(a.lines.join("\n"))}</pre></div>`).join("")}
+      <div class="rawnote">${escapeHtml(b.note)}</div>
+    </div>`;
+  }).join("");
+}
+
+async function refreshRawPanel() {
+  if (ed.rawFor < 0 || !ed.doc) return;
+  const box = document.querySelector(`#st${ed.rawFor} .rawpanel`);
+  if (!box) return;
+  await loadCommands();
+  box.innerHTML = rawPanel(ed.rawFor);
+}
+
+function copyCommands(btn) {
+  const step = ed.cmds && ed.cmds.steps[Number(btn.dataset.i)];
+  const block = step && step.blocks.find(b => b.target === btn.dataset.t);
+  if (!block) return;
+  const alt = btn.dataset.a !== undefined ? (block.alternatives || [])[Number(btn.dataset.a)] : null;
+  const text = (alt ? alt.lines : block.lines).join("\n");
+  navigator.clipboard.writeText(text).then(() => {
+    const was = btn.textContent;
+    btn.textContent = "copied";
+    setTimeout(() => { btn.textContent = was; }, 1200);
+  }, () => flash("The browser blocked writing to the clipboard."));
 }
 
 function refreshHead(i) {
@@ -563,6 +744,7 @@ function refreshHead(i) {
 function adoptRun(m) {
   ed.doc = { name: m.mission_name, steps: m.steps.map(s => s.raw) };
   if (m.clock && m.clock !== "sim") ed.doc.clock = m.clock;
+  if (m.target && m.target !== "sim") ed.doc.target = m.target;
   const o = m.options || {};
   if (o.require_arm_tucked) ed.doc.require_arm_tucked = true;
   if (o.arm_poses && Object.keys(o.arm_poses).length) ed.doc.arm_poses = o.arm_poses;
@@ -601,6 +783,7 @@ function updateEditorStatus(st) {
 
 function renderFileInfo() {
   $("ed-file").textContent = (ed.file ? `file: ${ed.file}` : "not saved to a file yet") +
+    ` · runs on: ${TARGET_LABEL[targetOf(ed.doc)] || targetOf(ed.doc)}` +
     (dirty() ? " · unsaved changes" : "");
 }
 
@@ -644,12 +827,14 @@ async function validateAndPush(running) {
     const res = await api("live_edit", { doc: ed.doc });
     ed.liveMsg = res ? "✓ Live: the running mission now uses the edited upcoming steps." : "";
   }
+  if (ed.rawFor >= 0) await refreshRawPanel();
   renderBanner();
 }
 
 function readValue(el) {
   if (el.dataset.kind === "int") return parseInt(el.value, 10);
   if (el.dataset.kind === "str") return el.value;
+  if (el.dataset.kind === "bool") return el.value === "" ? undefined : el.value === "true";
   if (el.type === "number") {
     if (el.value === "") return undefined;
     const v = Number(el.value);
@@ -658,16 +843,25 @@ function readValue(el) {
   return el.value;
 }
 
+// data-path names the key in the raw step: "duration", "check.min_distance",
+// "ros.linear.y", "angles.2" (raw overrides are one level deeper).
 function setPath(step, path, val) {
   const parts = path.split(".");
   if (parts[0] === "angles") { step.angles[Number(parts[1])] = val === undefined ? null : val; return; }
-  if (parts.length === 2) {
-    const obj = step[parts[0]] || (step[parts[0]] = {});
-    if (val === undefined) delete obj[parts[1]]; else obj[parts[1]] = val;
-    if (!Object.keys(obj).length) delete step[parts[0]];
-    return;
+  const chain = [step];
+  let obj = step;
+  for (let k = 0; k < parts.length - 1; k++) {
+    const key = parts[k];
+    if (typeof obj[key] !== "object" || obj[key] === null) obj[key] = {};
+    obj = obj[key];
+    chain.push(obj);
   }
-  if (val === undefined) delete step[path]; else step[path] = val;
+  const last = parts[parts.length - 1];
+  if (val === undefined) delete obj[last]; else obj[last] = val;
+  // drop the mappings that became empty again, so saved files stay clean
+  for (let k = chain.length - 1; k > 0; k--) {
+    if (!Object.keys(chain[k]).length) delete chain[k - 1][parts[k - 1]];
+  }
 }
 
 function insertStep(at, step) {
@@ -682,6 +876,12 @@ function stepAction(act, i) {
   const s = steps[i];
   if (act === "close") { ed.open = -1; renderEditor(); return; }
   if (act === "watch") { watchStep(i); return; }
+  if (act === "raw") {
+    ed.rawFor = ed.rawFor === i ? -1 : i;
+    renderEditor();
+    if (ed.rawFor >= 0) refreshRawPanel();
+    return;
+  }
   if (act === "up") { [steps[i - 1], steps[i]] = [steps[i], steps[i - 1]]; ed.open = i - 1; }
   else if (act === "down") { [steps[i + 1], steps[i]] = [steps[i], steps[i + 1]]; ed.open = i + 1; }
   else if (act === "dup") return insertStep(i + 1, JSON.parse(JSON.stringify(s)));
@@ -724,6 +924,8 @@ $("steps").addEventListener("click", (e) => {
     }
     return;
   }
+  const copyBtn = e.target.closest("button[data-act='copy']");
+  if (copyBtn) { copyCommands(copyBtn); return; }
   const actBtn = e.target.closest("button[data-act]");
   if (actBtn) { stepAction(actBtn.dataset.act, i); return; }
   if (e.target.closest(".head")) { ed.open = ed.open === i ? -1 : i; renderEditor(); }
@@ -738,7 +940,7 @@ $("steps").addEventListener("change", (e) => {
 });
 $("steps").addEventListener("input", (e) => {
   const el = e.target;
-  if (el.tagName !== "INPUT" || !el.dataset.path) return;
+  if (!["INPUT", "TEXTAREA"].includes(el.tagName) || !el.dataset.path) return;
   const i = Number(el.closest(".step").dataset.i);
   setPath(ed.doc.steps[i], el.dataset.path, readValue(el));
   changed(false);
@@ -755,6 +957,43 @@ document.querySelectorAll("[data-add]").forEach(b => b.addEventListener("click",
   insertStep(ed.doc.steps.length, defaultStep(type));
 }));
 
+/* ---------------------------------------------------------------- target */
+// Where the mission runs (saved in the mission file as "target"): the
+// simulation, the real robots, or both. Setting it away from "sim" creates
+// the links to the real robot straight away, so the chips in the header show
+// whether it can actually be reached before a mission is started.
+function renderTargets(st) {
+  const doc = targetOf(ed.doc);
+  document.querySelectorAll("[data-target]").forEach(b => b.classList.toggle("on", b.dataset.target === doc));
+  const box = $("target-chips");
+  const real = st.targets && st.targets.real;
+  if (!real) { box.innerHTML = ""; return; }
+  const on = doc !== "sim";
+  const robot = real.robot || {}, arm = real.arm || {};
+  const chip = (dot, label, title) =>
+    `<span class="chip" title="${escapeHtml(title)}"><span class="dot ${dot ? "on" : ""}"></span> ${escapeHtml(label)}</span>`;
+  const where = on ? "" : " (this mission runs on the simulation only)";
+  box.innerHTML =
+    chip(on && robot.connected,
+      `real robot ${on ? (robot.connected ? "ready" : "not reachable") : "off"}`,
+      `${real.label} - ROS domain ${real.domain_id}, drives on ${real.cmd_vel_topic}` + where) +
+    chip(on && arm.connected,
+      `real arm ${real.arm_host ? (on ? (arm.connected ? "ready" : "not reachable") : "off") : "not configured"}`,
+      `${real.arm_host ? "real xArm at " + real.arm_host : "no real xArm configured (REAL_XARM_HOST)"}` + where);
+}
+
+document.querySelectorAll("[data-target]").forEach(b => b.addEventListener("click", () => {
+  if (!ed.doc) return;
+  const t = b.dataset.target;
+  if (t !== "sim" && !confirm(`Connect the REAL robots and run this mission on them (${TARGET_LABEL[t]})?\n\n` +
+      `The Avular Origin One and the xArm 6 will really move. Make sure the area is clear ` +
+      `and someone can press the emergency stop.\n\n` +
+      `(Starting the mission asks again.)`)) return;
+  if (t === "sim") delete ed.doc.target; else ed.doc.target = t;
+  api("target", { target: t });
+  changed(false);
+}));
+
 async function loadMission(file) {
   ed.loading = true;
   try {
@@ -763,10 +1002,11 @@ async function loadMission(file) {
     if (r.error) { flash(r.error); return; }
     ed.doc = { name: r.doc.name || file, steps: Array.isArray(r.doc.steps) ? r.doc.steps : [] };
     if (r.doc.clock) ed.doc.clock = r.doc.clock;
+    if (r.doc.target) ed.doc.target = r.doc.target;
     if (r.doc.require_arm_tucked) ed.doc.require_arm_tucked = r.doc.require_arm_tucked;
     if (r.doc.arm_poses) ed.doc.arm_poses = r.doc.arm_poses;
     ed.file = file; ed.saved = JSON.stringify(ed.doc);
-    ed.open = -1; ed.runId = null; ed.error = ""; ed.errStep = -1; ed.liveMsg = "";
+    ed.open = -1; ed.rawFor = -1; ed.runId = null; ed.error = ""; ed.errStep = -1; ed.liveMsg = "";
     renderEditor();
     validateAndPush(false);
   } catch (err) { flash(String(err)); }
@@ -795,7 +1035,7 @@ $("ed-saveas").addEventListener("click", () => { if (ed.doc) saveAs(); });
 $("ed-new").addEventListener("click", () => {
   if (dirty() && !confirm("Discard the unsaved changes?")) return;
   ed.doc = { name: "New mission", steps: [defaultStep("drive"), defaultStep("arm_joint")] };
-  ed.file = ""; ed.saved = ""; ed.open = 0; ed.runId = null; ed.error = ""; ed.errStep = -1;
+  ed.file = ""; ed.saved = ""; ed.open = 0; ed.rawFor = -1; ed.runId = null; ed.error = ""; ed.errStep = -1;
   renderEditor();
   validateAndPush(false);
 });
@@ -1002,6 +1242,7 @@ async function poll() {
       else if ($("mission-select").value) loadMission($("mission-select").value);
     }
     renderHeader(st);
+    renderTargets(st);
     updateEditorStatus(st);
     renderReason(st.mission);
     if (linkedRunning() || ed.liveMsg === "") renderBanner();
@@ -1017,6 +1258,16 @@ async function poll() {
 
 $("start").addEventListener("click", async () => {
   if (!ed.doc) return;
+  const t = targetOf(ed.doc);
+  if (t !== "sim") {
+    const what = t === "both"
+      ? "This mission runs on the SIMULATION and the REAL robots at the same time."
+      : "This mission runs on the REAL robots.";
+    if (!confirm(`${what}\n\nThe Avular Origin One will drive and the xArm 6 will move for real ` +
+        `(ROS domain ${(realCfg().domain_id ?? 42)}).\n\n` +
+        `Make sure the area around the robots is clear and someone can press the emergency ` +
+        `stop. Abort in this dashboard stops the mission.\n\nStart it?`)) return;
+  }
   const res = await api("start", { doc: ed.doc, file: ed.file || "(unsaved)" });
   if (res) {
     ed.runId = res.run_id; ed.open = -1; ed.liveMsg = "";

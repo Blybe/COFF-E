@@ -1,18 +1,26 @@
-"""ROS 2 side of the orchestrator: the Avular Origin One mobile base.
+"""ROS 2 side of the orchestrator: the mobile base (simulated or real).
 
-One rclpy node that talks to the simulation containers over the normal ROS 2
-(DDS) network, exactly like the origin-nav container does:
+One rclpy node per target, each in its own ROS 2 domain, so the simulation and
+the real Origin One can be commanded at the same time without their topics
+mixing up:
 
-  /robot/cmd_vel   publishes: drives the simulated Origin One
-  /robot/odom      subscribes: where the robot actually is (the check for
+  <cmd_vel topic>  publishes: drives the robot
+  <odom topic>     subscribes: where the robot actually is (the check for
                    every drive step)
-  /clock           subscribes: Gazebo time, so "drive for 60 s" means 60 s of
+  <clock topic>    subscribes: Gazebo time, so "drive for 60 s" means 60 s of
                    simulation time (the sim runs at ~0.5x real time)
-  navigate_to_pose action client: sends the Origin One to a Cerebra waypoint
-                   or a map coordinate with Nav2 (planner runs in origin-nav)
+  navigation       the simulation is driven with a Nav2 NavigateToPose action
+                   goal; the real robot gets a "move through poses" behavior
+                   for its autopilot and is then tracked through its global
+                   pose (see targets.py)
 
-The node is spun in a background thread; the engine and the dashboard call
-the small methods below from their own threads.
+Taking control of the real Origin One is part of the drive: it only moves when
+its control mode is USER and the Twist messages arrive on /robot/cmd_vel_user
+(origin_msgs/srv/SetControlMode). The simulation implements the same interface,
+so SIM_DRIVE_MODE=user exercises exactly the same code path as the real robot.
+
+The node is spun in a background thread; the engine and the dashboard call the
+small methods below from their own threads.
 """
 
 import collections
@@ -23,7 +31,7 @@ import time
 
 import rclpy
 from action_msgs.msg import GoalStatus
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import PoseStamped, Twist
 from nav2_msgs.action import NavigateToPose
 from nav_msgs.msg import Odometry
 from rclpy.action import ActionClient
@@ -32,13 +40,29 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from rosgraph_msgs.msg import Clock
 
-ODOM_TIMEOUT = 5.0        # s: /robot/odom older than this counts as "no robot"
+import commands
+
+ODOM_TIMEOUT = 5.0        # s: odometry older than this counts as "no robot"
 CLOCK_TIMEOUT = 3.0       # s: /clock older than this counts as "no sim time"
-CMD_RATE = 10.0            # Hz at which drive commands are (re)sent
+SERVICE_TIMEOUT = 5.0     # s to wait for a control-mode / behavior service
+MOVE_THROUGH_POSES = 10   # knowledge_base_msgs/msg/Behavior
+
+# The Avular control-mode services, at their standard names. Used when a raw
+# override points a drive step at the USER topic on a target that normally
+# drives on the plain cmd_vel topic.
+USER_MODE_SERVICE = "/robot/cmd_vel_controller/set_control_mode"
+USER_MODE_RESET_SERVICE = "/robot/cmd_vel_controller/reset_control_mode"
+
+
+def _user_topic(topic):
+    """True for the Twist topics that only work in control mode USER."""
+    return bool(topic) and str(topic).endswith("_user")
 
 
 class NavGoal:
-    """Small wrapper around a NavigateToPose goal, for polling."""
+    """Wrapper around a NavigateToPose goal, for polling."""
+
+    kind = "action"
 
     def __init__(self, future):
         self.future = future           # goal handle future from send_goal_async
@@ -56,52 +80,98 @@ class NavGoal:
                 pass
 
 
+class BehaviorGoal:
+    """A "move through poses" behavior of the real robot's autopilot.
+
+    The service returns as soon as the behavior has been accepted; the robot
+    then plans and drives the route itself, so arrival is tracked through the
+    robot's global pose. Cancelling one is not possible through the same
+    service (it would need the job/behavior services of the knowledge base),
+    so a cancelled behavior keeps running on the robot - the mission log says
+    so.
+    """
+
+    kind = "behavior"
+
+    def __init__(self, x, y, radius):
+        self.x = x
+        self.y = y
+        self.radius = radius
+        self.distance = None
+        self.cancelled = False
+
+    def cancel(self):
+        self.cancelled = True
+
+
 class Robot:
-    def __init__(self, scene_file="/tmp/cerebra/scene.json", log=print):
+    """The ROS 2 link of one target (see targets.py for the configuration)."""
+
+    def __init__(self, cfg, log=print):
+        self.cfg = cfg
+        self.name = cfg["name"]
         self._log = log
-        self._scene_file = scene_file
         self._odom = {"x": 0.0, "y": 0.0, "yaw": 0.0, "speed": 0.0}
         self._odom_stamp = -1e9
         self._odom_count = 0
+        self._pose = None              # global (map) pose, real robot only
+        self._pose_stamp = -1e9
         self._sim_seconds = 0.0
         self._sim_stamp = -1e9
         self._factor = 0.0             # EMA of sim-time / real-time
-        self._active_goal = None       # NavGoal whose feedback we store
+        self._active_goal = None
+        self._has_control = False
+        self._nav_error = ""
         self._traj = collections.deque(maxlen=4000)
         self._traj.append((0.0, 0.0))
+        self._pubs = {}
+        self._clients = {}
+        self._nav_clients = {}
         self._lock = threading.Lock()
 
-        if not rclpy.ok():
-            rclpy.init()
-        self.node = Node("coffe_orchestrator")
+        self._context = rclpy.Context()
+        self._context.init(domain_id=int(cfg.get("domain_id") or 0))
+        self.node = Node(f"coffe_orchestrator_{self.name}", context=self._context)
         # The bridge publishes sensor data best-effort; match it so we still
         # receive odometry if the network drops a packet.
         sensor_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
-        self.node.create_subscription(Odometry, "/robot/odom", self._odom_cb, sensor_qos)
-        self.node.create_subscription(Clock, "/clock", self._clock_cb, 10)
-        self.cmd_pub = self.node.create_publisher(Twist, "/robot/cmd_vel", 10)
-        self.nav = ActionClient(self.node, NavigateToPose, "navigate_to_pose")
+        self.node.create_subscription(Odometry, cfg["odom_topic"], self._odom_cb, sensor_qos)
+        if cfg.get("clock_topic"):
+            self.node.create_subscription(Clock, cfg["clock_topic"], self._clock_cb, 10)
+        if cfg.get("pose_topic"):
+            self.node.create_subscription(Odometry, cfg["pose_topic"], self._pose_cb, sensor_qos)
 
-        self._executor = MultiThreadedExecutor(num_threads=2)
+        self._executor = MultiThreadedExecutor(num_threads=2, context=self._context)
         self._executor.add_node(self.node)
         self._spin = threading.Thread(target=self._executor.spin, daemon=True)
         self._spin.start()
-        self._log("[robot] orchestrator node up, waiting for /robot/odom and /clock")
+        self._log(f"[robot:{self.name}] node up on ROS domain "
+                  f"{self._context.get_domain_id()}, cmd_vel on {cfg['cmd_vel_topic']}")
 
     # ------------------------------------------------------------ callbacks
 
-    def _odom_cb(self, msg):
+    @staticmethod
+    def _pose_of(msg):
         p = msg.pose.pose.position
         q = msg.pose.pose.orientation
         yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y ** 2 + q.z ** 2))
-        speed = msg.twist.twist.linear.x
+        return p.x, p.y, yaw
+
+    def _odom_cb(self, msg):
+        x, y, yaw = self._pose_of(msg)
         with self._lock:
-            self._odom = {"x": p.x, "y": p.y, "yaw": yaw, "speed": speed}
+            self._odom = {"x": x, "y": y, "yaw": yaw, "speed": msg.twist.twist.linear.x}
             self._odom_stamp = time.time()
             self._odom_count += 1
             last = self._traj[-1]
-            if math.hypot(p.x - last[0], p.y - last[1]) > 0.05:
-                self._traj.append((p.x, p.y))
+            if math.hypot(x - last[0], y - last[1]) > 0.05:
+                self._traj.append((x, y))
+
+    def _pose_cb(self, msg):
+        x, y, yaw = self._pose_of(msg)
+        with self._lock:
+            self._pose = {"x": x, "y": y, "yaw": yaw}
+            self._pose_stamp = time.time()
 
     def _clock_cb(self, msg):
         sim = msg.clock.sec + msg.clock.nanosec * 1e-9
@@ -136,50 +206,200 @@ class Robot:
 
     # ------------------------------------------------------------ driving
 
-    def publish_cmd(self, linear, angular):
-        msg = Twist()
-        msg.linear.x = float(linear)
-        msg.angular.z = float(angular)
-        self.cmd_pub.publish(msg)
+    def _publisher(self, topic):
+        pub = self._pubs.get(topic)
+        if pub is None:
+            pub = self.node.create_publisher(Twist, topic, 10)
+            self._pubs[topic] = pub
+        return pub
 
-    def stop(self):
+    def publish_twist(self, msg, topic=None):
+        """Publish a Twist message given as {"linear": {...}, "angular": {...}},
+        so a raw override can set any field (not just x and z)."""
+        twist = Twist()
+        for field in ("x", "y", "z"):
+            setattr(twist.linear, field, float((msg.get("linear") or {}).get(field, 0.0)))
+            setattr(twist.angular, field, float((msg.get("angular") or {}).get(field, 0.0)))
+        self._publisher(topic or self.cfg["cmd_vel_topic"]).publish(twist)
+
+    def publish_cmd(self, linear, angular, topic=None):
+        self.publish_twist({"linear": {"x": linear}, "angular": {"z": angular}}, topic=topic)
+
+    def stop(self, topic=None):
         """Safety: make sure the robot stops driving."""
         for _ in range(10):
-            self.publish_cmd(0.0, 0.0)
+            self.publish_cmd(0.0, 0.0, topic=topic)
             time.sleep(0.05)
+
+    # --------------------------------------------------- control mode
+
+    def _service(self, name, srv_type):
+        key = (name, srv_type.__name__)
+        client = self._clients.get(key)
+        if client is None:
+            client = self.node.create_client(srv_type, name)
+            self._clients[key] = client
+        return client
+
+    def _call(self, name, srv_type, request, timeout=SERVICE_TIMEOUT):
+        """Call a service and wait for the answer: (ok, message)."""
+        client = self._service(name, srv_type)
+        if not client.wait_for_service(timeout_sec=timeout):
+            return False, f"{name} is not available (is the robot reachable?)"
+        future = client.call_async(request)
+        deadline = time.time() + timeout
+        while not future.done() and time.time() < deadline:
+            time.sleep(0.02)
+        if not future.done():
+            return False, f"{name} did not answer within {timeout:.0f} s"
+        try:
+            response = future.result()
+        except Exception as exc:                      # service call failed
+            return False, f"{name} failed: {exc}"
+        success = bool(getattr(response, "success", True))
+        message = str(getattr(response, "message", "") or "")
+        return success, message or ("ok" if success else "refused")
+
+    def take_control(self, topic=None):
+        """Take control of the mobile base: (ok, message).
+
+        Only needed on the real robot (and in SIM_DRIVE_MODE=user): the Origin
+        One ignores /robot/cmd_vel_user until its control mode is USER. A drive
+        step whose raw override points at a USER topic needs it too."""
+        service = self.cfg.get("mode_service")
+        if not service and _user_topic(topic or self.cfg["cmd_vel_topic"]):
+            service = USER_MODE_SERVICE
+        if not service:
+            return True, f"direct cmd_vel on {self.cfg['cmd_vel_topic']}"
+        if self._has_control:
+            return True, "already in control"
+        try:
+            from origin_msgs.srv import SetControlMode
+        except ImportError as exc:
+            return False, (f"the Avular messages are missing from this image ({exc}) - "
+                           "rebuild coffe-orchestrator")
+        request = SetControlMode.Request()
+        request.mode.mode = int(self.cfg["control_mode"])
+        ok, message = self._call(service, SetControlMode, request)
+        if ok:
+            self._has_control = True
+            self._log(f"[robot:{self.name}] took control ({message})")
+        return ok, message
+
+    def release_control(self, topic=None):
+        """Give control back (mode reset), best effort."""
+        service = self.cfg.get("mode_reset_service")
+        if not service and _user_topic(topic or self.cfg["cmd_vel_topic"]):
+            service = USER_MODE_RESET_SERVICE
+        if not service or not self._has_control:
+            return True, "no control to release"
+        self._has_control = False
+        try:
+            from origin_msgs.srv import ReturnControlMode
+        except ImportError as exc:
+            return False, f"the Avular messages are missing from this image ({exc})"
+        request = ReturnControlMode.Request()
+        request.mode_from.mode = int(self.cfg["control_mode"])
+        ok, message = self._call(service, ReturnControlMode, request)
+        self._log(f"[robot:{self.name}] released control ({message})")
+        return ok, message
 
     def odom(self):
         with self._lock:
             fresh = time.time() - self._odom_stamp < ODOM_TIMEOUT and self._odom_count > 0
             return dict(self._odom, fresh=fresh)
 
-    # ------------------------------------------------------------ Nav2
+    def pose(self):
+        """Where the robot is in the map frame: the autopilot's global pose on
+        the real robot, the odometry on the simulation."""
+        with self._lock:
+            if self._pose is not None and time.time() - self._pose_stamp < ODOM_TIMEOUT:
+                return dict(self._pose, fresh=True)
+        return self.odom()
 
-    def nav_ready(self):
+    # ------------------------------------------------------------ navigation
+
+    def nav_ready(self, action=None):
+        if self.cfg["nav_kind"] == "action":
+            try:
+                return self._nav_client(action).server_is_ready()
+            except Exception:
+                return False
         try:
-            return self.nav.server_is_ready()
-        except Exception:
+            from knowledge_base_msgs.srv import SetAndExecuteBehaviors
+        except ImportError:
             return False
+        return self._service(action or self.cfg["nav_name"],
+                             SetAndExecuteBehaviors).service_is_ready()
 
-    def nav_send(self, x, y, yaw):
+    def _nav_client(self, name=None):
+        name = name or self.cfg["nav_name"]
+        client = self._nav_clients.get(name)
+        if client is None:
+            client = ActionClient(self.node, NavigateToPose, name)
+            self._nav_clients[name] = client
+        return client
+
+    def nav_send(self, x, y, yaw, frame=None, action=None):
+        """Send a navigation goal; None (and nav_error() set) when refused."""
+        self._nav_error = ""
+        if self.cfg["nav_kind"] == "action":
+            return self._send_action_goal(x, y, yaw, action)
+        return self._send_behavior(x, y, yaw, frame)
+
+    def _send_action_goal(self, x, y, yaw, action=None):
         goal = NavigateToPose.Goal()
-        goal.pose.header.frame_id = "map"
+        goal.pose.header.frame_id = self.cfg["nav_frame"]
         # Keep the stamp at zero: tf2 then uses the latest available transform
         # (AMCL only publishes map->odom while the robot moves, so a pose
         # stamped "now" can be rejected as too old from standstill).
         goal.pose.pose.position.x = float(x)
         goal.pose.pose.position.y = float(y)
-        goal.pose.pose.orientation.z = math.sin(yaw / 2.0)
-        goal.pose.pose.orientation.w = math.cos(yaw / 2.0)
+        qz, qw = commands.yaw_quaternion(yaw)
+        goal.pose.pose.orientation.z = qz
+        goal.pose.pose.orientation.w = qw
         try:
-            ng = NavGoal(self.nav.send_goal_async(
+            ng = NavGoal(self._nav_client(action).send_goal_async(
                 goal, feedback_callback=self._nav_feedback))
             with self._lock:
                 self._active_goal = ng  # engine sends one goal at a time
             return ng
         except Exception as exc:
-            self._log(f"[robot] Nav2 goal failed: {exc}")
+            self._nav_error = f"Nav2 goal failed: {exc}"
+            self._log(f"[robot:{self.name}] {self._nav_error}")
             return None
+
+    def _send_behavior(self, x, y, yaw, frame=None):
+        """Ask the real robot's autopilot to plan and drive to a pose
+        (MOVE_THROUGH_POSES with a single goal pose)."""
+        try:
+            from knowledge_base_msgs.msg import Behavior
+            from knowledge_base_msgs.srv import SetAndExecuteBehaviors
+        except ImportError as exc:
+            self._nav_error = (f"the Avular autopilot messages are missing from this "
+                               f"image ({exc}) - rebuild coffe-orchestrator")
+            return None
+        request = SetAndExecuteBehaviors.Request()
+        behavior = Behavior()
+        behavior.type = MOVE_THROUGH_POSES
+        pose = PoseStamped()
+        pose.header.frame_id = frame or self.cfg["nav_frame"]
+        pose.pose.position.x = float(x)
+        pose.pose.position.y = float(y)
+        qz, qw = commands.yaw_quaternion(yaw)
+        pose.pose.orientation.z = qz
+        pose.pose.orientation.w = qw
+        behavior.goals = [pose]
+        request.behaviors = [behavior]
+        ok, message = self._call(self.cfg["nav_name"], SetAndExecuteBehaviors, request)
+        if not ok:
+            self._nav_error = f"{self.cfg['nav_name']}: {message}"
+            return None
+        self._log(f"[robot:{self.name}] autopilot behavior accepted: {message}")
+        goal = BehaviorGoal(x, y, self.cfg["arrival_radius"])
+        with self._lock:
+            self._active_goal = goal
+        return goal
 
     def _nav_feedback(self, wrapper):
         # The feedback wrapper proxies the message fields; _feedback_msg is
@@ -195,8 +415,12 @@ class Robot:
                 self._active_goal.distance = float(dist)
 
     def nav_status(self, goal):
-        """Returns (state, distance_remaining). state is one of
-        active / succeeded / failed / cancelled / rejected."""
+        """(state, distance_remaining); state is one of active / succeeded /
+        failed / cancelled / rejected."""
+        if goal is None:
+            return "failed", None
+        if goal.kind == "behavior":
+            return self._behavior_status(goal)
         if not goal.future.done():
             return "active", goal.distance
         if goal.handle is None:
@@ -223,17 +447,36 @@ class Robot:
             return "cancelled", goal.distance
         return "failed", goal.distance
 
+    def _behavior_status(self, goal):
+        if goal.cancelled:
+            return "cancelled", goal.distance
+        pose = self.pose()
+        if not pose["fresh"]:
+            return "active", goal.distance
+        distance = math.hypot(pose["x"] - goal.x, pose["y"] - goal.y)
+        goal.distance = distance
+        if distance <= goal.radius:
+            return "succeeded", distance
+        return "active", distance
+
     def nav_cancel(self, goal):
-        if goal is not None:
-            goal.cancel()
+        if goal is None:
+            return
+        goal.cancel()
+        if goal.kind == "behavior":
+            self._log(f"[robot:{self.name}] the autopilot keeps executing the behavior it "
+                      "was given - stop the robot from Cerebra Studio or with the remote")
+
+    def nav_error(self):
+        return self._nav_error
 
     # ------------------------------------------------------------ waypoints
 
     def _scene(self):
         try:
-            with open(self._scene_file, encoding="utf-8") as f:
+            with open(self.cfg.get("scene_file", ""), encoding="utf-8") as f:
                 return json.load(f)
-        except (OSError, ValueError):
+        except (OSError, ValueError, TypeError):
             return None
 
     def waypoint(self, name):
@@ -241,7 +484,7 @@ class Robot:
         if not scene:
             return None
         for wp in scene.get("waypoints", []):
-            if wp.get("name", "").lower() == name.lower():
+            if wp.get("name", "").lower() == str(name).lower():
                 return wp["x"], wp["y"], wp.get("yaw", 0.0)
         return None
 
@@ -274,6 +517,12 @@ class Robot:
     def snapshot(self):
         o = self.odom()
         snap = {
+            "target": self.name,
+            "domain_id": self._context.get_domain_id(),
+            "cmd_vel_topic": self.cfg["cmd_vel_topic"],
+            "mode_service": self.cfg.get("mode_service"),
+            "in_control": self._has_control,
+            "nav_kind": self.cfg["nav_kind"],
             "connected": o["fresh"],
             "x": o["x"], "y": o["y"], "yaw": o["yaw"], "speed": o["speed"],
             "time_factor": self.time_factor(),
@@ -284,3 +533,17 @@ class Robot:
         }
         snap.update(self.scene_info())
         return snap
+
+    def close(self):
+        try:
+            self._executor.shutdown(timeout_sec=1.0)
+        except Exception:
+            pass
+        try:
+            self.node.destroy_node()
+        except Exception:
+            pass
+        try:
+            self._context.shutdown()
+        except Exception:
+            pass

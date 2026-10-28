@@ -11,9 +11,11 @@ will actually use it:
 | [4. The mission dashboard](#4-the-mission-dashboard) | one page that shows robot + arm + mission progress |
 | [5. Run your first mission](#5-run-your-first-mission) | drive 60 s → arm 90° → drive further, with checks |
 | [6. Edit missions in the step editor](#6-edit-missions-in-the-step-editor) | click a step, choose Avular or xArm, change it, even while it runs; live simulator view; sample missions |
-| [7. Write missions by hand](#7-write-missions-by-hand) | the step types and all options |
-| [8. How the checking works](#8-how-the-checking-works) | what "PASS" actually means |
-| [9. Troubleshooting](#9-troubleshooting) | |
+| [7. See the raw ROS commands (and edit them)](#7-see-the-raw-ros-commands-and-edit-them) | the RAW button: the exact messages per step, the raw overrides, raw command steps |
+| [8. Run the same mission on the real robots](#8-run-the-same-mission-on-the-real-robots) | the Run on switch, the zenoh bridge, what is different on hardware |
+| [9. Write missions by hand](#9-write-missions-by-hand) | the step types and all options |
+| [10. How the checking works](#10-how-the-checking-works) | what "PASS" actually means |
+| [11. Troubleshooting](#11-troubleshooting) | |
 
 ## 1. Start the stack
 
@@ -252,7 +254,8 @@ that does it (**AVULAR** for the Origin One, **XARM** for the arm,
    *Avular Origin One*, *xArm 6* or *Wait*. Then pick the action and fill in
    the values:
    - Avular: *Drive for a time* (duration, speed, turn rate, minimum
-     distance check) or *Navigate with Nav2* (Cerebra waypoint or map x/y/yaw).
+     distance check) or *Navigate* (Cerebra waypoint or map x/y/yaw; Nav2 on
+     the simulation, the autopilot on the real robot).
    - xArm: *Move joints* (one joint, or several joints where an empty box
      keeps that joint where it is) or *Home position*, with speed and tolerance.
 3. Use the buttons under a step to move it up or down, duplicate or delete it,
@@ -303,6 +306,7 @@ and appear in the dropdown. Open one in the step editor and change it.
 | `sample_4_greeting.yaml` | wave at a visitor (J1 left/right), bow, then turn and drive off |
 | `sample_5_safety_fail.yaml` | **fails on purpose**: tries to drive with the arm reaching out, and the safety rule refuses. Fix it by inserting an *Arm pose: transport* step |
 | `sample_6_nav_serve.yaml` | Nav2 to a serving spot, serve to the left, Nav2 back to the Home waypoint (watch it in RViz) |
+| `sample_7_raw_commands.yaml` | the raw side of the orchestrator: a raw command step, a drive with the raw Twist fields and publish rate spelled out, a drive on the USER topic (how the real robot is driven), a per-target command, and a hand-published zero Twist |
 
 They all use two features made for the arm on the robot:
 
@@ -318,7 +322,169 @@ They all use two features made for the arm on the robot:
   step the engine checks that the arm is within 5° of the `transport` pose.
   If not, the step fails and the robot does not move.
 
-## 7. Write missions by hand
+## 7. See the raw ROS commands (and edit them)
+
+Every step in the editor has a **RAW** button. It opens the messages the
+orchestrator sends for that step, as copy-ready command lines, for **both**
+targets:
+
+| Block | What it shows |
+|---|---|
+| Simulation (ROS domain 0) | what runs against the two simulations |
+| Real robots (ROS domain 42) | what runs against the real Origin One and the real xArm 6 |
+
+The block of the target the mission runs on is highlighted. A step that sends
+nothing (a `wait`) says so; an arm step also shows the equivalent
+**xarm_ros2** service call in radians next to the Python SDK call in degrees.
+**copy** puts the text on the clipboard, so a mission can be run by hand on
+the real robots.
+
+The same view is available from a terminal:
+
+```bash
+curl -s -X POST http://localhost:8080/api/commands \
+  -H "Content-Type: application/json" \
+  -d '{"doc": {"name": "x", "steps": [{"type": "drive", "duration": 5, "linear": 0.25}]}}'
+```
+
+### Editing the raw message
+
+Open a step and scroll to **Raw ROS message (override)** (an arm step has
+**Raw xArm SDK options** instead). Empty fields keep the value from the
+structured fields above, so a step stays readable and only what you type
+changes:
+
+| Step | Overridable | Effect |
+|---|---|---|
+| `drive` | `ros.topic`, `ros.rate`, `ros.linear.y/z`, `ros.angular.x/y` | publish a different message, on another topic, at another rate (`linear.x` and `angular.z` are the Speed and Turn rate fields above) |
+| `goto` | `ros.action`, `ros.frame`, `ros.x/y/z/yaw` | send the goal to another action/service, in another frame, or to different coordinates |
+| `arm_*` | `arm.acc`, `arm.wait` | pass `mvacc` to the SDK and/or block until the arm got there |
+
+The message **type** is fixed - the orchestrator publishes typed messages.
+For anything else, use a raw command step.
+
+Pointing a `drive` step at `/robot/cmd_vel_user` also makes the orchestrator
+do the control-mode handshake (set mode USER, publish, give control back),
+exactly like on the real robot. That is a good way to test the real command
+path without hardware; with `SIM_DRIVE_MODE=user` in `.env`, *every* drive
+step does it.
+
+### A raw command step
+
+**+ Raw command** adds a step whose body is a shell command. It runs in the
+orchestrator container with ROS 2 sourced (`bash -lc`), on the ROS domain of
+the target, and passes when its exit code is the expected one (`expect`,
+default 0). **Simulation only** / **Real robots only** give a per-target
+variant; leave them empty to run the same command everywhere:
+
+```yaml
+  - name: "Raw: publish a zero Twist by hand"
+    type: command
+    run: 'ros2 topic pub --once /robot/cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0}}"'
+    expect: 0
+    timeout: 20
+```
+
+The command runs in its own process group: **Abort**, a timeout or the end of
+the step kills it, so a `ros2 topic pub -r 10` cannot keep driving the robot
+after the mission stopped. `sample_7_raw_commands.yaml` uses all of this.
+
+## 8. Run the same mission on the real robots
+
+A mission says where it runs with **Run on: Sim | Real | Both** in the header
+(saved in the mission file as `target`). `Sim` is the default, so a mission
+file stays portable.
+
+| Target | The robot | The arm | Checked with |
+|---|---|---|---|
+| `sim` | Gazebo Origin One, `/robot/cmd_vel` | UFACTORY Studio arm at 192.168.100.200 | the simulation's odometry and joint angles |
+| `real` | real Origin One, over the zenoh bridge | real xArm at `REAL_XARM_HOST` | the real robot's odometry/global pose and the real arm's angles |
+| `both` | both at once | both at once | the simulation (the real robots get the same commands) |
+
+Switching to Real or Both asks for confirmation and connects to the real robot
+straight away, so the header chips show whether it is reachable *before* you
+start. Starting a mission on the real robots asks again.
+
+### What is different on the real robot
+
+The real Origin One is **not** driven like the simulation:
+
+1. Take control of the mobile base: `ros2 service call
+   /robot/cmd_vel_controller/set_control_mode origin_msgs/srv/SetControlMode
+   "{mode: {mode: 30}}"` (30 = USER).
+2. Only then publish `geometry_msgs/msg/Twist` on
+   **`/robot/cmd_vel_user`**, 10x per second, for the duration of the step.
+3. When the step is over, send a zero Twist and give control back with
+   `/robot/cmd_vel_controller/reset_control_mode`.
+
+Navigation is different too: the real robot plans and drives routes itself
+with its **autopilot**, so a `goto` step becomes a `MOVE_THROUGH_POSES`
+behavior:
+
+```bash
+ros2 service call /autopilot/information_manager/set_and_execute_behaviors \
+  knowledge_base_msgs/srv/SetAndExecuteBehaviors \
+  "{behaviors: [{type: 10, goals: [{header: {frame_id: map}, pose: {...}}]}]}"
+```
+
+The orchestrator then waits until the robot's global pose
+(`/autopilot/estimated_pose`) is within 0.6 m of the goal. That service does
+not take a cancel: if a `goto` step is aborted or times out, the log says so -
+stop the robot from Cerebra Studio or with its remote. (The simulation keeps
+using Nav2, which does support cancel.)
+
+The arm is the same code path on both sides: the xArm Python SDK
+(`set_servo_angle`), with `REAL_XARM_HOST` instead of the Studio container.
+
+### Connecting to the real robot (zenoh bridge)
+
+The robot's ROS 2 network is a local network *on* the robot. A computer joins
+it through a zenoh bridge (the robot runs `zenoh-bridge-ros2dds` 1.0.3):
+
+```bash
+# .env
+#   REAL_ROBOT_IP=192.168.100.1      the robot's IP (or its access point)
+#   REAL_XARM_HOST=192.168.100.50    the real xArm control box (empty = no arm)
+docker compose --profile real up -d   # starts coffe-zenoh-bridge
+```
+
+The bridge runs in its own ROS 2 domain (`REAL_ROS_DOMAIN_ID`, default 42), so
+it cannot mix with the simulation's domain 0. The orchestrator joins that
+domain with a second ROS 2 context and uses it only for `target: real|both`.
+
+| Environment variable | Default | Meaning |
+|---|---|---|
+| `SIM_DRIVE_MODE` | `direct` | `user` = drive the *simulation* like the real robot (USER mode + `/robot/cmd_vel_user`) |
+| `REAL_ROBOT_IP` | `192.168.100.1` | the Origin One, for the zenoh bridge |
+| `REAL_ROS_DOMAIN_ID` | `42` | ROS 2 domain between the orchestrator and the bridge |
+| `REAL_XARM_HOST` | empty | real xArm 6 control box; empty = this target has no arm |
+| `REAL_CMD_VEL_TOPIC` | `/robot/cmd_vel_user` | where the drive messages go |
+| `REAL_MODE_SERVICE` / `REAL_MODE_RESET_SERVICE` | `.../set_control_mode` / `.../reset_control_mode` | the control-mode handshake |
+| `REAL_CONTROL_MODE` | `30` | 30 = USER |
+| `REAL_ODOM_TOPIC` | `/robot/odom` | the robot's own odometry |
+| `REAL_POSE_TOPIC` | `/autopilot/estimated_pose` | global pose, for the arrival check |
+| `REAL_BEHAVIOR_SERVICE` | `/autopilot/information_manager/set_and_execute_behaviors` | navigation |
+
+All of it lives in `orchestrator/targets.py`, so a different lab network is a
+change in `.env`, not in the code.
+
+### What is verified here, and what is not
+
+- Verified live in the simulation: the control-mode handshake
+  (`SIM_DRIVE_MODE=user`), driving over `/robot/cmd_vel_user`, the raw
+  overrides, the raw command steps (including kill on abort), and every
+  command line the RAW view shows.
+- Verified against the real interfaces: the Avular `origin_msgs` and
+  `knowledge_base_msgs` definitions are built into the orchestrator image from
+  the Avular example workspace (pinned commit), and the xarm_ros2 service call
+  is checked against `xarm_msgs/srv/MoveJoint`.
+- **Not** verified (there is no hardware here): the TCP connection to the
+  robot's zenoh bridge, and the arrival tracking of a real autopilot behavior.
+  Try it with the robot powered up and the area clear, starting with a mission
+  that only drives a short distance (`min_distance` small), before running a
+  full mission.
+
+## 9. Write missions by hand
 
 Missions are plain YAML files, so you can also write or edit them in a text
 editor. They live in `Simulation-Docker/orchestrator/missions/`. Create a
@@ -356,6 +522,19 @@ steps:
   - name: "Give the planner a second"
     type: wait
     duration: 2
+
+  - name: "Drive 5 s with the raw Twist fields spelled out"
+    type: drive
+    duration: 5
+    linear: 0.25
+    ros:
+      rate: 5                     # publish at 5 Hz instead of 10
+      linear: {y: 0.0, z: 0.0}    # the raw message fields
+    check: {min_distance: 0.4}
+
+  - name: "Raw: publish a zero Twist by hand"
+    type: command
+    run: 'ros2 topic pub --once /robot/cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0}}"'
 ```
 
 Top-level options:
@@ -363,6 +542,7 @@ Top-level options:
 | Option | Values | Meaning |
 |---|---|---|
 | `name` | string | shown in the dashboard |
+| `target` | `sim` (default) / `real` / `both` | where the mission runs (see part 8) |
 | `require_arm_tucked` | `true` / `false` (default) | drive/goto steps fail unless the arm is in the `transport` pose |
 | `arm_poses` | `{name: [6 angles]}` | extra named poses for `arm_pose` steps |
 | `clock` | `sim` (default) / `wall` | `sim` = step durations count Gazebo time; `wall` = real time |
@@ -377,16 +557,25 @@ Step types and their checks:
 | `arm_home` | `speed` | all six joints within `tolerance_deg` of 0 |
 | `arm_pose` | `pose` (a name), `speed`, `check.tolerance_deg` | all six joints within `tolerance_deg` of the pose |
 | `wait` | `duration` | the time passed |
+| `command` | `run` (or `sim_run`/`real_run`), `expect` (0), `timeout` (30) | the command's exit code is `expect` |
+
+Every step also takes the raw overrides of part 7: `ros: {...}` on `drive` and
+`goto`, `arm: {acc, wait}` on the arm steps. They change the fields of the
+message that goes out (topic, rate, extra Twist fields, goal action/frame/pose,
+SDK acceleration); the message type is fixed.
 
 Notes:
 
 - Unspecified joints keep their current angle during an `arm_joint` step.
+- A `command` step is free text and runs as a shell command with ROS 2
+  sourced, so it can do anything the step types cannot - but it is only
+  checked by its exit code.
 - `goto` needs the `origin-nav` container (Nav2) and, for waypoints by
   name, a loaded Cerebra map (`CEREBRA_MAP` in `.env`).
 - Blind `drive` steps can hit a wall - that is what `min_distance` is for:
   the mission fails honestly instead of pretending.
 
-## 8. How the checking works
+## 10. How the checking works
 
 The orchestrator (`orchestrator/engine.py`) runs one step at a time:
 
@@ -406,7 +595,7 @@ The orchestrator (`orchestrator/engine.py`) runs one step at a time:
 Because of this, "the mission passed" means: **the robot really drove and
 the arm really moved, in the order you asked, verified by measurement.**
 
-## 9. Troubleshooting
+## 11. Troubleshooting
 
 - **Dashboard says "NO SERVER"** - `docker compose ps`: is `coffe-orchestrator`
   running? `docker compose logs coffe-orchestrator` for the reason.
@@ -428,5 +617,22 @@ the arm really moved, in the order you asked, verified by measurement.**
 - **Everything is slow** - the sim runs at ~0.5x real time; the factor is
   in the dashboard header. Lower the lidar load with `HEADLESS: "true"`
   in `docker-compose.yml` if you only need the dashboard.
+- **A raw command step fails with "exit N, expected 0"** - the command itself
+  is in the log (`[sim] $ ...`), with its last output line in the step detail.
+  Run it by hand in the container to see the full output:
+  `docker exec -it coffe-orchestrator bash -lc 'source /opt/ros/humble/setup.bash; <command>'`.
+- **The real robots stay "not reachable"** - the zenoh bridge is not running
+  (`docker compose --profile real up -d`), `REAL_ROBOT_IP` is wrong, or the
+  robot is not on the network. `docker logs coffe-zenoh-bridge` says which.
+- **The real robot does not move** - look for `took control` in the dashboard
+  log. Without it the control-mode handshake failed (the robot was in another
+  mode, e.g. manual). You can also do it by hand:
+  `ros2 service call /robot/cmd_vel_controller/set_control_mode origin_msgs/srv/SetControlMode "{mode: {mode: 30}}"`
+  from inside `docker exec -it coffe-orchestrator bash`.
+- **A real `goto` step times out** - the autopilot keeps driving the behavior
+  it was given (it cannot be cancelled through the same service). Stop the
+  robot from Cerebra Studio or with its remote, then check the map is loaded
+  and the robot is localised.
 - **Units reminder** - `linear`/`angular` are m/s and rad/s; arm angles are
-  **degrees**; mission `duration` is seconds (sim time by default).
+  **degrees** (the xarm_ros2 command shown in the RAW view is in radians);
+  mission `duration` is seconds (sim time by default).

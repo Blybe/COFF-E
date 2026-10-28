@@ -8,6 +8,11 @@ A background thread (re)connects to the simulated control box, enables
 motion, and polls the joint angles a few times per second for the dashboard.
 The engine uses command_joints() and angles(); every SDK call goes through
 one lock because the SDK shares a single TCP connection and report thread.
+
+The same class drives the real xArm: only the host changes (REAL_XARM_HOST),
+so the commands the dashboard shows for the simulation are the commands that
+go to the real arm. An empty host means "this target has no arm": the monitor
+thread is then not started at all, instead of logging connection errors.
 """
 
 import threading
@@ -19,7 +24,7 @@ RECONNECT_PERIOD = 8.0  # s between connect attempts while disconnected
 
 class Arm:
     def __init__(self, host="192.168.100.200", log=print, sleep=time.sleep):
-        self.host = host
+        self.host = (host or "").strip()
         self._log = log
         self._sleep = sleep
         self._lock = threading.Lock()
@@ -27,8 +32,13 @@ class Arm:
         self._angles = None   # list of 6 joint angles in degrees
         self._state = "disconnected"  # disconnected / connecting / ready / error
         self._error = ""
-        self._thread = threading.Thread(target=self._monitor, daemon=True)
-        self._thread.start()
+        self._thread = None
+        if not self.host:
+            self._state = "not configured"
+            self._error = "no xArm host configured for this target"
+        else:
+            self._thread = threading.Thread(target=self._monitor, daemon=True)
+            self._thread.start()
 
     # ------------------------------------------------------------ monitor
 
@@ -95,13 +105,20 @@ class Arm:
         with self._lock:
             return None if self._api is None else self._angles
 
-    def command_joints(self, angles_deg, speed):
-        """Start a joint move (non-blocking); returns the SDK code (0 = ok)."""
+    def command_joints(self, angles_deg, speed, acc=None, wait=False):
+        """Move the joints; returns the SDK code (0 = ok).
+
+        acc (deg/s^2) and wait are the raw overrides of the step: with
+        acc=None the SDK picks its own acceleration, and wait=True makes the
+        SDK call block until the arm has reached the target."""
+        kwargs = {"angle": [float(a) for a in angles_deg], "speed": float(speed),
+                  "wait": bool(wait)}
+        if acc is not None:
+            kwargs["mvacc"] = float(acc)
         with self._lock:
             if self._api is None:
                 return -1
-            return self._api.set_servo_angle(
-                angle=[float(a) for a in angles_deg], speed=float(speed), wait=False)
+            return self._api.set_servo_angle(**kwargs)
 
     # ------------------------------------------------------------ dashboard
 
@@ -111,6 +128,6 @@ class Arm:
                 "connected": self._api is not None and self._state == "ready",
                 "state": self._state,
                 "error": self._error,
-                "host": self.host,
+                "host": self.host or None,
                 "angles": self._angles,
             }
