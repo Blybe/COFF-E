@@ -42,6 +42,24 @@ display_reachable() {
     [ -n "$DISPLAY" ] && xset -q > /dev/null 2>&1
 }
 
+# Gazebo writes its GUI layout to ~/.ignition/gazebo/<version>/gui.config and
+# creates that folder on first start. That races with the simulation *server*,
+# which creates ~/.ignition/gazebo at the same moment: ignition-common's
+# createDirectories() then fails on the already existing parent, the GUI exits
+# with "Failed to create the default config folder" and the browser view shows
+# an empty desktop instead of the map. Creating the folder (with the stock
+# layout) before the launch avoids the race.
+prepare_gazebo_config() {
+    local default_gui=/usr/share/ignition/ignition-gazebo6/gui/gui.config
+    local config_dir="${HOME:-/root}/.ignition/gazebo/6"
+    [ -f "$default_gui" ] || return 0
+    mkdir -p "$config_dir"
+    [ -f "$config_dir/gui.config" ] || cp "$default_gui" "$config_dir/gui.config"
+    echo "[entrypoint] Gazebo GUI config ready: $config_dir/gui.config"
+}
+
+prepare_gazebo_config
+
 if [ "${HEADLESS:-false}" = "true" ]; then
     echo "[entrypoint] HEADLESS=true - starting without GUI."
 elif [ "${USE_HOST_DISPLAY:-0}" = "1" ]; then

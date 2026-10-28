@@ -418,8 +418,13 @@ class TestEngineSequencing(unittest.TestCase):
         self.assertEqual(robot.cmds[-1], (0.0, 0.0))  # safety stop
 
     def test_start_rejects_second_mission(self):
-        eng, robot, _ = make_engine()
-        eng.start(mission(steps=[{"type": "wait", "duration": 100, "timeout": 5.0}]))
+        # Real sleeping, unlike make_engine's fake: the fake sleep advances
+        # the mission clock instantly, so a 100 s wait would run to its end in
+        # microseconds and the background mission would race (and often beat)
+        # the second start() below. A real 0.1 s sleep per pump keeps the
+        # mission running until the abort, deterministically.
+        eng = engine.MissionEngine(FakeRobot(), FakeArm())
+        eng.start(mission(steps=[{"type": "wait", "duration": 100}]))
         try:
             with self.assertRaises(RuntimeError):
                 eng.start(mission(steps=[{"type": "wait", "duration": 1}]))

@@ -222,6 +222,12 @@ streamed to the browser (Xvfb -> x11vnc -> noVNC). If you run Docker from
 inside a WSL2 or Linux desktop, you can instead show the GUI natively, see
 [Options](#options).
 
+The entrypoint also prepares `~/.ignition/gazebo/<version>/gui.config` before
+the launch. Gazebo writes its GUI layout there, and without that folder the
+GUI races the simulation server for the parent directory and can abort with
+`Failed to create the default config folder`, leaving the browser view empty
+(see [Troubleshooting](#troubleshooting)).
+
 ### Driving the robot (teleop)
 
 Open a shell inside the running container and use the keyboard teleop from
@@ -408,6 +414,18 @@ or empty `CEREBRA_MAP` and set `SIM_WORLD` / `ROBOT_POSE_*`.
 - **Gazebo window is black or slow**: the GUI renders with software OpenGL
   (llvmpipe) by default, which is slower than a GPU but fine for this world.
   Rendering is much lighter with `HEADLESS: "true"` if you only need topics.
+- **The VNC view is empty (no map), but missions still pass**: the Gazebo GUI
+  process died at startup while the simulation server kept running, so only
+  the browser view is missing. Check with
+  `docker compose logs avular-origin-sim | grep "process has died"`: the log
+  then shows `Failed to create directory [/root/.ignition/gazebo]` followed by
+  `ign gazebo -g ... exit code -6`. That is a startup race in Gazebo: the GUI
+  creates `~/.ignition/gazebo/<version>/gui.config` at the same moment the
+  server creates `~/.ignition/gazebo`, and ignition-common's directory
+  creation fails on the existing parent. The entrypoint now creates that
+  folder (with the stock layout) before launching, which avoids the race - so
+  pull the current `avular-origin/entrypoint.sh` and recreate the container:
+  `docker compose up -d --force-recreate avular-origin-sim`.
 - **Port already in use**: something else on your machine uses one of the
   published ports. Change the left-hand side of the mapping in
   `docker-compose.yml` (e.g. `"127.0.0.1:6082:6081"`).
