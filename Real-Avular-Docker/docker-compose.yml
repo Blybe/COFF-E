@@ -1,0 +1,49 @@
+name: coffe-real-avular
+
+services:
+  zenoh-bridge:
+    image: eclipse/zenoh-bridge-ros2dds:1.0.3
+    environment:
+      ROS_DOMAIN_ID: "${LOCAL_ROS_DOMAIN_ID:-42}"
+      ROS_LOCALHOST_ONLY: "0"
+      # The image defaults to iron (16-byte GIDs); Chud and our node run
+      # Humble (24-byte GIDs), and a mismatch breaks the bridged data routes.
+      ROS_DISTRO: humble
+    # Map services return full occupancy grids, which take longer than the
+    # bridge's 5 s default query timeout over Wi-Fi.
+    command: ["client", "-e", "tcp/${REAL_ROBOT_IP:?Set REAL_ROBOT_IP in .env}:7447",
+              "--queries-timeout-default", "30"]
+    restart: "no"
+
+  avular:
+    build: .
+    depends_on: [zenoh-bridge]
+    environment:
+      ROS_DOMAIN_ID: "${LOCAL_ROS_DOMAIN_ID:-42}"
+      ROS_LOCALHOST_ONLY: "0"
+      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+      NAV_FRAME: "${NAV_FRAME:-map}"
+      INITIAL_POSE_TOPIC: "${INITIAL_POSE_TOPIC:-/initialpose}"
+      POSE_TOPIC: /autopilot/estimated_pose
+      BRAKE_TOPIC: /robot/safety_supervisor/emergency_brake_active
+      SIM_MAP_DIR: /sim_maps
+      SIM_MAP: "${SIM_MAP:-JMH - 3rd floor}"
+      ROBOT_NAME: "${ROBOT_NAME:-Chud}"
+      ROBOT_WIFI_SUFFIX: "${ROBOT_WIFI_SUFFIX:-RK5}"
+      REAL_ROBOT_IP: "${REAL_ROBOT_IP}"
+      ROBOT_MAP_ID: "${ROBOT_MAP_ID:-}"
+      ROBOT_MAP_NAME: "${ROBOT_MAP_NAME:-}"
+      MANUAL_MAX_LINEAR: "${MANUAL_MAX_LINEAR:-0.6}"
+      MANUAL_MAX_ANGULAR: "${MANUAL_MAX_ANGULAR:-1.0}"
+    volumes:
+      - ../cerebra-data/maps:/sim_maps:ro
+      - ./status:/host_status:ro
+      # Saved places are written here so they survive rebuilds.
+      - ./places:/places
+    ports: ["127.0.0.1:${DASHBOARD_PORT:-8082}:8080"]
+    init: true
+    stop_grace_period: 20s
+    restart: "no"
+
+# A separate Compose network/domain keeps this stack away from the simulation.
+# No host networking, simulator images, GUI desktop, arm SDK or privileged mode.

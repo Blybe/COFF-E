@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>COFF-E · Real Avular</title>
+<style>
+:root{--bg:#06090e;--panel:#0c121b;--panel2:#111a26;--panel3:#162232;--line:#1c2838;--line2:#27384d;--text:#dbe6f3;--dim:#7d8ca0;--accent:#38bdf8;--accent2:#0ea5e9;--pass:#34d399;--fail:#f87171;--warn:#fbbf24;--place:#c084fc;--mono:"Cascadia Mono",Consolas,"SFMono-Regular",monospace}
+*{box-sizing:border-box}
+html,body{min-height:100%}
+body{margin:0;color:var(--text);font:13px/1.5 "Segoe UI Variable","Segoe UI",system-ui,sans-serif;
+  background:radial-gradient(1200px 600px at 70% -10%,#0d2236 0%,transparent 60%),
+    linear-gradient(var(--bg),var(--bg));background-attachment:fixed}
+body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;opacity:.35;
+  background-image:linear-gradient(#ffffff06 1px,transparent 1px),linear-gradient(90deg,#ffffff06 1px,transparent 1px);background-size:32px 32px}
+header,main,#error{position:relative;z-index:1}
+
+/* ---------- top bar ---------- */
+header{position:sticky;top:0;z-index:10;background:#070c13e6;backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+header .inner{display:flex;align-items:center;gap:10px;flex-wrap:wrap;max-width:1680px;margin:auto;padding:10px 16px}
+.brand{display:flex;align-items:center;gap:10px;margin-right:6px}
+.brand .logo{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;font-weight:800;color:#03121c;
+  background:linear-gradient(135deg,var(--accent),#22d3ee);box-shadow:0 0 18px #38bdf855}
+h1{font-size:15px;letter-spacing:3px;margin:0;font-weight:800}
+#identity{display:block;color:var(--dim);font-size:11px;letter-spacing:.5px;text-transform:uppercase}
+.chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line2);background:var(--panel2);border-radius:999px;
+  padding:3px 11px;color:var(--warn);font:600 11px/1.6 var(--mono);text-transform:uppercase;letter-spacing:.4px}
+.pill::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 8px currentColor}
+.pill[data-s=ok]{color:var(--pass)}.pill[data-s=bad]{color:var(--fail)}.pill[data-s=active]{color:var(--accent)}.pill[data-s=idle]{color:var(--dim)}
+#battery-pill{color:var(--text)}
+.stop{margin-left:auto;font:800 14px/1 inherit;letter-spacing:1.5px;min-width:190px;padding:13px 20px!important;border-radius:10px!important;
+  background:linear-gradient(180deg,#e5484d,#b4232a)!important;border:1px solid #ff8a8f!important;color:#fff!important;
+  box-shadow:0 0 0 3px #e5484d33,0 6px 24px #e5484d55}
+.stop:hover{filter:brightness(1.12)}.stop:active{transform:translateY(1px)}
+
+/* ---------- controls ---------- */
+button,select,input{font:inherit;color:var(--text);background:var(--panel3);border:1px solid var(--line2);border-radius:8px;padding:7px 11px}
+input,select{background:#0a111a}
+input:focus,select:focus,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+button{cursor:pointer;transition:border-color .12s,background .12s,filter .12s}
+button:hover{border-color:var(--accent)}button:disabled{opacity:.35;cursor:not-allowed;filter:grayscale(.6)}
+button.primary{background:linear-gradient(180deg,var(--accent),var(--accent2));border-color:#7dd3fc;color:#03121c;font-weight:700}
+button.primary:hover{filter:brightness(1.1)}
+button.danger{background:#3b1418;border-color:#7f1d24;color:#fecaca}
+button.ghost{background:transparent}
+input[type=number]{width:84px;font-family:var(--mono)}select{width:100%}
+input[type=range]{accent-color:var(--accent);padding:0;background:none;border:0}
+input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px}
+details summary{cursor:pointer;list-style:none}details summary::before{content:"▸ ";color:var(--accent)}details[open] summary::before{content:"▾ "}
+
+/* ---------- layout ---------- */
+main{display:grid;grid-template-columns:340px minmax(0,1fr) 310px;grid-template-areas:"flow map telem" "log log telem";
+  gap:12px;padding:12px 16px 20px;max-width:1680px;margin:auto}
+#flow{grid-area:flow}#map-panel{grid-area:map}#robot-panel{grid-area:telem}#log-panel{grid-area:log}
+.panel{background:linear-gradient(180deg,#0e1520,#0b1119);border:1px solid var(--line);border-radius:14px;padding:14px;min-width:0;
+  box-shadow:0 1px 0 #ffffff08 inset,0 10px 30px #00000055}
+h2{display:flex;align-items:center;gap:8px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1.6px;color:var(--dim);margin:0 0 12px}
+h2::before{content:"";width:3px;height:12px;border-radius:2px;background:var(--accent);box-shadow:0 0 8px var(--accent)}
+h3{font-size:11px;text-transform:uppercase;letter-spacing:1.2px;color:var(--dim);margin:14px 0 6px}
+.note{color:var(--dim);font-size:11.5px;margin:6px 0}
+.row{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:8px 0}.row>button{flex:1}
+.wide{width:100%;margin-top:7px}
+
+/* ---------- workflow stepper ---------- */
+.workflow{display:flex;flex-direction:column;gap:10px;counter-reset:step}
+.step{position:relative;border:1px solid var(--line);border-radius:12px;padding:12px 12px 12px 50px;background:var(--panel2);transition:border-color .2s}
+.step::before{counter-increment:step;content:counter(step,decimal-leading-zero);position:absolute;left:12px;top:11px;width:28px;height:28px;border-radius:50%;
+  display:grid;place-items:center;font:700 11px var(--mono);color:var(--accent);border:1px solid var(--line2);background:#08111b}
+.step.done{border-color:#1f5a46}.step.done::before{content:"✓";color:#03140d;background:var(--pass);border-color:var(--pass);box-shadow:0 0 10px #34d39966}
+.step>strong{display:block;font-size:13px;letter-spacing:.3px;margin:3px 0 6px;color:var(--text)}
+.step-go{border-color:#1e4a66;background:linear-gradient(180deg,#0f2131,var(--panel2))}
+#go{font-size:14px;padding:11px;letter-spacing:.5px}
+label.check{display:flex;gap:8px;margin:8px 0;font-size:12px;color:#c1cddb}label.check input{flex-shrink:0;align-self:start;margin-top:2px}
+.coords{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:8px 0}.coords label{display:flex;flex-direction:column;font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:1px}
+.coords input{width:100%;margin-top:2px}
+
+/* ---------- map ---------- */
+#map-panel{display:flex;flex-direction:column}
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+#map-name{font-weight:600}.tag{font:600 11px var(--mono);color:var(--accent);background:#0a1a28;border:1px solid #1e4a66;border-radius:6px;padding:2px 8px}
+#cursor{font-family:var(--mono)}
+.zoom{margin-left:auto;display:flex;gap:4px}.zoom button{padding:5px 10px;min-width:34px}
+.map-wrap{position:relative;border:1px solid var(--line2);border-radius:12px;overflow:hidden;background:#05080c;box-shadow:0 0 0 1px #000 inset,0 0 40px #0ea5e911 inset}
+#map{display:block;width:100%;height:clamp(360px,calc(100vh - 300px),780px);touch-action:none;cursor:crosshair}
+.hud{position:absolute;left:10px;bottom:10px;right:10px;display:flex;justify-content:space-between;gap:8px;pointer-events:none}
+#autopilot-line{pointer-events:auto;margin:0;font-size:12px;padding:6px 10px;border-radius:8px;background:#05090ed9;border:1px solid var(--line2);max-width:70%}
+#autopilot-line b{color:var(--accent);font:700 10.5px var(--mono);letter-spacing:1px;text-transform:uppercase;margin-right:4px}
+.legend{display:flex;flex-wrap:wrap;gap:6px 14px;margin:10px 0 2px}.legend span{font-size:11.5px}
+.blue{color:var(--accent)}.green{color:var(--pass)}.yellow{color:var(--warn)}
+.status-strip{display:grid;gap:4px;margin-top:6px;padding:8px 10px;border-radius:10px;background:#09101a;border:1px solid var(--line)}
+.status-strip .note{margin:0}
+
+/* ---------- telemetry ---------- */
+#robot-panel{display:flex;flex-direction:column;gap:12px;padding:0;background:none;border:0;box-shadow:none}
+#robot-panel>.card{background:linear-gradient(180deg,#0e1520,#0b1119);border:1px solid var(--line);border-radius:14px;padding:14px;box-shadow:0 10px 30px #00000055}
+dl{display:grid;grid-template-columns:auto 1fr;gap:0;margin:0;font-size:12px}
+dt,dd{padding:5px 0;border-bottom:1px dashed #1a2534}dt{color:var(--dim)}
+dd{margin:0;text-align:right;overflow-wrap:anywhere;font-family:var(--mono);font-size:11.5px}
+dl>dt:last-of-type,dl>dd:last-of-type{border-bottom:0}
+#progress{font-family:var(--mono);color:var(--text);background:#09101a;border:1px solid var(--line);border-radius:8px;padding:7px 9px}
+label.speed{display:grid;grid-template-columns:58px 1fr 72px;align-items:center;gap:8px;font-size:12px;margin:6px 0;color:var(--dim)}
+label.speed b{text-align:right;font:600 12px var(--mono);color:var(--text)}
+.pad{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px auto;max-width:210px}
+.pad button{font-size:22px;min-height:56px;border-radius:12px;touch-action:none;user-select:none;background:linear-gradient(180deg,#172536,#101a27)}
+.pad button:active{background:#0c3550;border-color:var(--accent);box-shadow:0 0 14px #38bdf866}
+#pad-stop{background:#3b1418;border-color:#7f1d24;color:#fecaca}
+.kbd{font:600 10.5px var(--mono);border:1px solid var(--line2);border-bottom-width:2px;border-radius:4px;padding:0 5px;color:var(--text)}
+
+/* ---------- messages ---------- */
+#error{display:none;max-width:1648px;margin:12px auto 0;border:1px solid #7f1d24;background:#2a0f13ee;padding:10px 14px;border-radius:10px;color:#fecaca;box-shadow:0 0 24px #e5484d33}
+#error::before{content:"⚠ ";font-weight:700}
+.warnbox{border:1px solid #6b5326;background:#2a2112;color:#fde68a;border-radius:8px;padding:7px 9px;font-size:12px;margin:8px 0;display:none}
+#places{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}
+.place{display:inline-flex;border:1px solid #4c2f6b;border-radius:999px;overflow:hidden}
+.place button{border:0;border-radius:0;background:#1f1630;color:#ead8ff;padding:5px 11px}.place button:hover{background:#2c1f45}
+.place button.del{color:#b79bd6;padding:5px 9px;border-left:1px solid #4c2f6b}
+#ready{list-style:none;padding:8px 10px;margin:8px 0;font-size:12px;background:#09101a;border:1px solid var(--line);border-radius:10px}
+#ready li{padding:2px 0 2px 20px;position:relative}#ready li::before{position:absolute;left:0;font-weight:700}
+#ready li.ok::before{content:"✓";color:var(--pass)}#ready li.no::before{content:"✗";color:var(--fail)}#ready li.no{color:#a7b3c2}
+#ready li.opt::before{content:"○";color:var(--dim)}#ready li.opt{color:var(--dim)}
+#log-panel{display:flex;flex-direction:column}
+#log{height:170px;overflow:auto;white-space:pre-wrap;margin:0;padding:10px 12px;border-radius:10px;background:#04070b;border:1px solid var(--line);
+  font:11.5px/1.6 var(--mono);color:#9fb3c8}
+::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:#1f2c3d;border-radius:6px;border:2px solid transparent;background-clip:padding-box}
+
+@media(max-width:1280px){main{grid-template-columns:320px minmax(0,1fr);grid-template-areas:"flow map" "telem telem" "log log"}
+  #robot-panel{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}}
+@media(max-width:760px){main{display:flex;flex-direction:column}#robot-panel{display:flex}#map{height:360px}.stop{margin-left:0;width:100%}}
+</style>
+</head>
+<body>
+<header><div class="inner">
+<div class="brand"><div class="logo">C</div><div><h1>COFF-E</h1><small id="identity">REAL AVULAR</small></div></div>
+<div class="chips"><span class="pill" id="mode" data-s="idle">CONNECTING</span><span class="pill" id="link-pill" data-s="idle">link —</span><span class="pill" id="control-pill">control: —</span><span class="pill" id="battery-pill">battery —</span></div>
+<button class="danger stop" id="stop">STOP / HOLD (Esc)</button>
+</div></header>
+<div id="error" role="alert"></div>
+<main>
+<section class="panel" id="flow"><h2>Navigation workflow</h2><div class="workflow">
+<div class="step" id="step-1"><strong>Load map</strong>
+<button id="load-chud" class="primary wide">Load __ROBOT__ map</button>
+<p class="note">Loading stops the base and switches __ROBOT__'s localization map (~10–30 s over Wi-Fi).</p>
+<details><summary class="note">Other maps</summary>
+<select id="maps" aria-label="Robot map"><option value="">Refresh to list robot maps</option></select>
+<div class="row"><button id="refresh">Refresh maps</button><button id="load">Load selected</button></div>
+<button id="load-sim" class="wide">Preview simulation map</button>
+<p class="note">The simulation map is not stored on __ROBOT__: preview only, no localization or navigation.</p></details></div>
+<div class="step" id="step-2"><strong>Localize</strong><p class="note">Initial pose tool, then drag on the map from where __ROBOT__ really stands, in the direction it faces.</p>
+<div class="row"><button id="initial-mode">Initial pose tool</button><button id="seed">Send initial pose</button></div>
+<button id="fit" class="wide">Auto-fit yellow arrow to the laser</button>
+<button id="seed-from-goal" class="wide">Use blue goal marker as initial pose</button>
+<p class="note" id="seed-status">Yellow arrow = initial pose you will send. Works while enabled, as long as __ROBOT__ stands still.</p>
+<details><summary class="note">How to localize</summary>
+<p class="note">Scroll to zoom, right-drag (or Shift+drag) to pan, <b>Center on robot</b> to jump there. Then enable motion and turn in place a little (↶ ↷): __ROBOT__ only refines its estimate while moving. Confirm when the pink laser dots match the walls: at least 40% must lie on map walls (shown as "Laser on walls"; a right pose usually gives 50–80%, a wrong one 10–20%) and "Autopilot position" must say accurate. Furniture that is not on the map lowers the score. <b>Auto-fit</b> searches around the yellow arrow (or the green estimate) for the best laser fit; it only moves the yellow arrow, you still check and send it.</p></details>
+<label class="check"><input type="checkbox" id="loc-check">Pose, heading and laser match the real surroundings.</label>
+<button id="confirm-loc" class="wide">Confirm localization</button></div>
+<div class="step" id="step-3"><strong>Enable motion</strong>
+<div class="warnbox" id="remote-warning"></div>
+<label class="check"><input type="checkbox" id="safety">Area clear, physical e-stop tested and within reach, arm stowed, onboard jobs/scheduling disabled. I supervise the robot.</label>
+<button id="enable" class="primary wide">Enable real base</button></div>
+<div class="step step-go" id="step-4"><strong>Destination</strong>
+<div id="places"></div><p class="note" id="places-note">Load __ROBOT__'s map to see saved places.</p>
+<div class="row"><button id="goal-mode">Goal tool</button><span class="note" style="flex:1">or drag on the map</span></div>
+<div class="coords"><label>X <input id="x" type="number" value="0" step="any"></label><label>Y <input id="y" type="number" value="0" step="any"></label><label>Yaw <input id="yaw" type="number" value="0" step="any"></label></div>
+<div class="row"><input id="place-name" maxlength="40" placeholder="Name, e.g. Coffee machine" style="flex:1;min-width:0"></div>
+<div class="row"><button id="save-goal">Save goal as place</button><button id="save-here">Save robot position</button></div>
+<h3>Ready to drive?</h3><ul id="ready"></ul>
+<label class="check"><input type="checkbox" id="goal-check">I checked this destination. The real robot will drive there.</label>
+<button id="go" class="primary wide">Drive to destination</button></div>
+</div></section>
+<section class="panel" id="map-panel"><h2>Map &amp; live position</h2>
+<div class="toolbar"><b id="map-name">No map loaded</b><span class="tag" id="tool">Tool: initial pose</span><span class="note" id="cursor"></span>
+<span class="zoom"><button id="zoom-in" title="Zoom in">+</button><button id="zoom-out" title="Zoom out">−</button><button id="zoom-fit">Fit</button><button id="center-robot">Center on robot</button></span></div>
+<div class="map-wrap"><canvas id="map" aria-label="Map: drag to select a position and heading"></canvas>
+<div class="hud"><p id="autopilot-line"><b>Autopilot</b> <span id="behavior">—</span></p></div></div>
+<p class="legend note"><span class="green">● robot (gray: stale)</span><span class="yellow">● initial pose (· laser if __ROBOT__ stood there)</span><span class="blue">● goal</span><span style="color:var(--place)">● saved place</span><span style="color:#ff6bcb">· laser</span><span style="color:#00dce8">— onboard plan</span></p>
+<div class="status-strip"><p class="note" id="map-warning">Load an onboard map to localize.</p>
+<p class="note" id="overlay-status">Waiting for laser scan and onboard plan.</p>
+<p class="note">Stop holds zero USER velocity and requests the onboard stop. It is NOT a certified emergency stop: keep the physical e-stop within reach.</p></div>
+</section>
+<section class="panel" id="robot-panel">
+<div class="card"><h2>Robot &amp; connection</h2>
+<dl><dt>Target*</dt><dd id="robot-name">—</dd><dt>Robot IP</dt><dd id="robot-ip">—</dd><dt>Battery</dt><dd id="battery">—</dd><dt>Control mode</dt><dd id="control-mode">—</dd><dt>ROS link</dt><dd id="ros-link">—</dd><dt>Laptop Wi-Fi</dt><dd id="wifi-name">—</dd><dt>Laptop signal</dt><dd id="wifi-signal">—</dd><dt>Robot Wi-Fi client</dt><dd id="robot-wifi">—</dd></dl>
+<p class="note" id="connection-note">Chud = RK5 · Ronaldo = CR7.</p>
+<p class="note">*Configured name, not a verified identity. Laptop signal is the Windows adapter reading.</p></div>
+<div class="card"><h2>Base feedback</h2>
+<dl><dt>Odometry</dt><dd id="odom">—</dd><dt>Brake</dt><dd id="brake">—</dd><dt>Localization</dt><dd id="localized">not confirmed</dd><dt>Autopilot position</dt><dd id="accuracy">—</dd><dt>Room to map wall</dt><dd id="clearance">—</dd><dt>Laser on walls</dt><dd id="match">—</dd><dt>Uncertainty</dt><dd id="variance">—</dd><dt>Position (m)</dt><dd id="position">—</dd><dt>Heading (rad)</dt><dd id="heading">—</dd><dt>Speed</dt><dd id="speed">—</dd><dt>USER hold</dt><dd id="hold">no</dd></dl>
+<h3>Navigation progress</h3><p id="progress" class="note">No goal sent this session.</p>
+<p class="note">Driven: estimated-pose trace. Remaining: straight line, not path length.</p></div>
+<div class="card"><h2>Manual drive · hold a button</h2>
+<label class="speed">Forward <input type="range" id="lin" min="0.05" max="0.6" step="0.05" value="0.3"><b id="lin-val"></b></label>
+<label class="speed">Turn <input type="range" id="ang" min="0.1" max="1.0" step="0.05" value="0.5"><b id="ang-val"></b></label>
+<p class="note" id="speed-note"></p>
+<div class="pad"><span></span><button data-v="1" data-w="0" aria-label="Forward">↑</button><span></span><button data-v="0" data-w="1" aria-label="Turn left">↶</button><button id="pad-stop" class="danger" aria-label="Stop">■</button><button data-v="0" data-w="-1" aria-label="Turn right">↷</button><span></span><button data-v="-1" data-w="0" aria-label="Reverse">↓</button><span></span></div>
+<p class="note">Keys: <span class="kbd">↑</span> <span class="kbd">↓</span> <span class="kbd">←</span> <span class="kbd">→</span> drive · <span class="kbd">Esc</span> STOP</p>
+<button id="release" class="wide">Release USER control after stop</button>
+<p class="note">Keep this tab visible while driving; hiding it stops the robot.</p></div>
+</section>
+<section class="panel" id="log-panel"><h2>Activity log</h2><pre id="log"></pre></section>
+</main>
+<script>
+'use strict';
+const token='__TOKEN__', owner=crypto.randomUUID(), $=id=>document.getElementById(id);
+let state=null, grid=null, image=null, tool='initial', initial=null, selected=null, dragging=false, start=null;
+const view={zoom:1,panX:0,panY:0};let panning=false;
+let driveTimer=null, driveBusy=false, polling=false, mine=false, overlay=null, connection=null, places=[];
+function error(message){$('error').textContent=message;$('error').style.display=message?'block':'none';}
+async function api(path,body){
+  const options=body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json','X-COFFE-Token':token},body:JSON.stringify({...body,owner})};
+  const response=await fetch('/api/'+path,options), result=await response.json();
+  if(!response.ok)throw new Error(result.error||response.statusText);
+  return result;
+}
+async function action(fn){try{error('');await fn();await poll();}catch(e){error(e.message);}}
+async function busy(button,label,fn){const old=button.textContent;button.disabled=true;button.textContent=label;try{await fn();}finally{button.textContent=old;button.disabled=false;}}
+async function stop(){endDrive(false);mine=false;await api('stop',{});}
+$('stop').onclick=()=>action(stop);$('pad-stop').onclick=()=>action(stop);
+$('refresh').onclick=()=>action(async()=>{
+  const result=await api('maps'),maps=result.maps;$('maps').replaceChildren();
+  const norm=id=>String(id||'').replace(/[{}]/g,'').toLowerCase();
+  for(const m of maps){const o=document.createElement('option');o.value=m.id;o.textContent=(m.name||'Unnamed')+' · '+m.id.slice(0,8)+(norm(m.id)===norm(result.active)?' · ACTIVE':'');$('maps').append(o);}
+  if(!maps.length)error('No onboard maps found.');
+});
+async function fetchMap(){
+  grid=await api('map');image=null;
+  if(!grid){await fetchPlaces();return;}
+  const c=document.createElement('canvas');c.width=grid.width;c.height=grid.height;
+  const ctx=c.getContext('2d'), pixels=ctx.createImageData(c.width,c.height);
+  for(let row=0;row<grid.height;row++)for(let col=0;col<grid.width;col++){
+    // Dark theme: free floor is dark slate, walls glow pale blue, unknown is near-black.
+    const value=grid.data[row*grid.width+col], t=value<0?0:value/100;
+    const rgb=value<0?[9,13,19]:[24+t*176,34+t*190,48+t*207];
+    const i=((grid.height-1-row)*grid.width+col)*4;
+    pixels.data[i]=rgb[0];pixels.data[i+1]=rgb[1];pixels.data[i+2]=rgb[2];pixels.data[i+3]=255;
+  }
+  ctx.putImageData(pixels,0,0);image=c;$('map-name').textContent=grid.name+' · '+grid.resolution.toFixed(3)+' m/cell'+(grid.preview?' · PREVIEW ONLY':'');
+  await fetchPlaces();draw();
+}
+async function fetchPlaces(){places=await api('places');renderPlaces();}
+function renderPlaces(){
+  $('places').replaceChildren();
+  for(const p of places){
+    const box=document.createElement('span'),go=document.createElement('button'),del=document.createElement('button');
+    box.className='place';go.textContent=p.name;go.title=`(${p.x}, ${p.y}, ${p.yaw})`;go.onclick=()=>selectGoal(p);
+    del.className='del';del.textContent='×';del.title='Delete '+p.name;
+    del.onclick=()=>{if(confirm('Delete saved place "'+p.name+'"?'))action(async()=>{places=await api('places/delete',{name:p.name});renderPlaces();});};
+    box.append(go,del);$('places').append(box);
+  }
+  placesNote();
+}
+// Buttons are rebuilt only when the list changes; rebuilding on every poll
+// would swallow clicks that land between two polls.
+function placesNote(){
+  $('places-note').textContent=!grid||grid.preview||!state?.map_id?"Load __ROBOT__'s map to use saved places.":places.length?'Click a place to select it as destination.':'No saved places yet: set a goal (or drive there) and save it with a name.';
+}
+function selectGoal(p){
+  selected={x:p.x,y:p.y,yaw:p.yaw};tool='goal';$('tool').textContent='Tool: goal';$('goal-check').checked=false;
+  $('x').value=Number(p.x).toFixed(3);$('y').value=Number(p.y).toFixed(3);$('yaw').value=Number(p.yaw).toFixed(3);
+  if(p.name)$('place-name').value=p.name;draw();updateReady();
+}
+async function loadMap(id){mine=false;initial=selected=null;$('loc-check').checked=false;try{await api('load-map',{id});}finally{await fetchMap();}}
+$('load-chud').onclick=()=>action(()=>busy($('load-chud'),'Loading map… (up to 30 s)',async()=>{
+  if(!state?.default_map)throw new Error('Set ROBOT_MAP_ID in .env');await loadMap(state.default_map.id);}));
+$('load').onclick=()=>action(async()=>{if(!$('maps').value)throw new Error('Choose a map first');await busy($('load'),'Loading…',()=>loadMap($('maps').value));});
+$('load-sim').onclick=()=>action(()=>busy($('load-sim'),'Loading… checking robot maps (~10 s)',async()=>{
+  mine=false;initial=selected=null;$('loc-check').checked=false;
+  try{await api('load-sim-map',{});}finally{await fetchMap();}}));
+$('initial-mode').onclick=()=>{tool='initial';$('tool').textContent='Tool: initial pose';};
+$('goal-mode').onclick=()=>{tool='goal';$('tool').textContent='Tool: goal';};
+$('seed').onclick=()=>action(async()=>{if(!initial)throw new Error('Choose Initial pose tool and drag on the map from where __ROBOT__ really stands first');fitNote='';await api('seed',initial);$('loc-check').checked=false;});
+$('fit').onclick=()=>action(()=>busy($('fit'),'Fitting… (a few seconds)',async()=>{
+  if(!initial)throw new Error('First drag the yellow arrow roughly where __ROBOT__ stands (Initial pose tool); auto-fit then searches 1.5 m / 60° around it');
+  const r=await api('fit-pose',{around:initial});
+  initial={x:r.x,y:r.y,yaw:r.yaw};tool='initial';$('tool').textContent='Tool: initial pose';draw();
+  fitNote=`Auto-fit: ${Math.round(r.match*100)}% of laser on walls at the yellow arrow (green estimate ${Math.round(r.current*100)}%). `+
+    (r.match<state.match_min?'Still poor: drag the yellow arrow closer to where __ROBOT__ really stands and try again.'
+     :r.rival?`WARNING: (${r.rival.x.toFixed(1)}, ${r.rival.y.toFixed(1)}) fits almost as well (${Math.round(r.rival.match*100)}%). Make sure the yellow arrow is the real spot and heading before sending.`
+     :'Check that the yellow dots lie on the walls, then Send initial pose.');
+}));
+$('seed-from-goal').onclick=()=>action(async()=>{if(!selected)throw new Error('No blue goal marker on the map');
+  initial={...selected};selected=null;$('goal-check').checked=false;tool='initial';$('tool').textContent='Tool: initial pose';draw();
+  fitNote='';await api('seed',initial);$('loc-check').checked=false;});
+$('confirm-loc').onclick=()=>action(()=>api('confirm-localization',{confirmed:$('loc-check').checked}));
+$('enable').onclick=()=>action(async()=>{await api('enable',{confirmed:$('safety').checked});mine=true;});
+$('release').onclick=()=>action(()=>api('release',{}));
+function goalFields(){
+  if(['x','y','yaw'].some(id=>!$(id).value.trim()||!$(id).validity.valid))throw new Error('Enter valid X, Y and yaw values');
+  return{x:Number($('x').value),y:Number($('y').value),yaw:Number($('yaw').value)};
+}
+$('save-goal').onclick=()=>action(async()=>{places=await api('places/save',{name:$('place-name').value,...goalFields()});renderPlaces();});
+$('save-here').onclick=()=>action(async()=>{
+  const p=state?.feedback.pose;if(!p||state.now-state.feedback.pose_time>2)throw new Error('No fresh robot pose');
+  if(!state.localized)throw new Error('Confirm localization first, otherwise the saved position is wrong');
+  places=await api('places/save',{name:$('place-name').value,x:p.x,y:p.y,yaw:p.yaw});renderPlaces();});
+$('go').onclick=()=>action(async()=>{
+  if(!mine)throw new Error('Enable motion in this browser first');
+  const point=goalFields();
+  if(!$('goal-check').checked)throw new Error('Tick "I checked this destination" first');
+  await api('navigate',point);selected=point;$('goal-check').checked=false;
+});
+for(const id of ['x','y','yaw'])$(id).oninput=()=>{$('goal-check').checked=false;selected={x:Number($('x').value),y:Number($('y').value),yaw:Number($('yaw').value)};draw();updateReady();};
+$('goal-check').onchange=updateReady;
+function geometry(){
+  const canvas=$('map'), scale=grid?Math.min((canvas.width-24)/grid.width,(canvas.height-24)/grid.height)*view.zoom:1;
+  return{scale,left:grid?(canvas.width-grid.width*scale)/2+view.panX:0,top:grid?(canvas.height-grid.height*scale)/2+view.panY:0};
+}
+function zoomAt(sx,sy,factor){
+  if(!grid)return;const w=screenToWorld(sx,sy);view.zoom=Math.min(60,Math.max(1,view.zoom*factor));
+  if(view.zoom===1){view.panX=view.panY=0;}else{const p=worldToScreen(w.x,w.y);view.panX+=sx-p.x;view.panY+=sy-p.y;}draw();
+}
+function canvasPoint(e){const b=$('map').getBoundingClientRect();return{x:(e.clientX-b.left)*$('map').width/b.width,y:(e.clientY-b.top)*$('map').height/b.height};}
+$('map').addEventListener('wheel',e=>{e.preventDefault();const p=canvasPoint(e);zoomAt(p.x,p.y,e.deltaY<0?1.25:0.8);},{passive:false});
+$('map').oncontextmenu=e=>e.preventDefault();
+$('zoom-in').onclick=()=>zoomAt($('map').width/2,$('map').height/2,1.5);
+$('zoom-out').onclick=()=>zoomAt($('map').width/2,$('map').height/2,1/1.5);
+$('zoom-fit').onclick=()=>{view.zoom=1;view.panX=view.panY=0;draw();};
+$('center-robot').onclick=()=>{
+  const pose=state?.feedback.pose;if(!grid||!pose){error('No robot pose to center on');return;}
+  if(view.zoom<8)view.zoom=8;const p=worldToScreen(pose.x,pose.y);
+  view.panX+=$('map').width/2-p.x;view.panY+=$('map').height/2-p.y;draw();
+};
+function screenToWorld(x,y){
+  const g=geometry(), lx=(x-g.left)/g.scale*grid.resolution,ly=(grid.height-(y-g.top)/g.scale)*grid.resolution;
+  const [ox,oy,a]=grid.origin;
+  return{x:ox+Math.cos(a)*lx-Math.sin(a)*ly,y:oy+Math.sin(a)*lx+Math.cos(a)*ly};
+}
+function worldToScreen(x,y){
+  const g=geometry(),[ox,oy,a]=grid.origin,dx=x-ox,dy=y-oy;
+  return{x:g.left+(Math.cos(a)*dx+Math.sin(a)*dy)/grid.resolution*g.scale,
+    y:g.top+(grid.height-(-Math.sin(a)*dx+Math.cos(a)*dy)/grid.resolution)*g.scale};
+}
+function arrow(ctx,p,color,size=1){
+  if(!p)return;const point=worldToScreen(p.x,p.y),a=p.yaw-grid.origin[2];
+  ctx.save();ctx.translate(point.x,point.y);ctx.rotate(-a);ctx.scale(size,size);ctx.strokeStyle=color;ctx.fillStyle=color;ctx.lineWidth=3;
+  ctx.beginPath();ctx.arc(0,0,7,0,Math.PI*2);ctx.fill();ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(24,0);ctx.lineTo(16,-5);ctx.moveTo(24,0);ctx.lineTo(16,5);ctx.stroke();ctx.restore();
+}
+function draw(){
+  const canvas=$('map'),box=canvas.getBoundingClientRect();canvas.width=Math.round(box.width);canvas.height=Math.round(box.height);
+  const ctx=canvas.getContext('2d');ctx.clearRect(0,0,canvas.width,canvas.height);
+  if(!grid||!image){ctx.fillStyle='#7d8ca0';ctx.font='14px "Segoe UI",system-ui';ctx.fillText("Click \u201cLoad __ROBOT__ map\u201d to begin",24,40);return;}
+  const g=geometry();ctx.imageSmoothingEnabled=false;ctx.drawImage(image,g.left,g.top,grid.width*g.scale,grid.height*g.scale);
+  if(!grid.preview&&overlay?.frame===grid.frame){
+    if(state&&state.now-overlay.path_time<5&&overlay.path.length){
+      ctx.strokeStyle='#00dce8';ctx.lineWidth=2;ctx.beginPath();
+      overlay.path.forEach(([x,y],i)=>{const p=worldToScreen(x,y);if(i)ctx.lineTo(p.x,p.y);else ctx.moveTo(p.x,p.y);});ctx.stroke();
+    }
+    if(state&&state.now-overlay.scan_time<2){
+      ctx.fillStyle='#ff6bcb';
+      const d=Math.max(2,Math.min(5,view.zoom/3));
+      for(const [x,y] of overlay.scan){const p=worldToScreen(x,y);ctx.fillRect(p.x-d/2,p.y-d/2,d,d);}
+    }
+  }
+  ctx.font='11px system-ui';
+  for(const p of places){arrow(ctx,p,'#c38bff',.6);const s=worldToScreen(p.x,p.y);ctx.fillStyle='#e4d2ff';ctx.fillText(p.name,s.x+8,s.y-8);}
+  // Ghost: the live scan as it would lie if __ROBOT__ stood at the yellow arrow.
+  const est=state?.feedback.pose;
+  if(initial&&est&&!grid.preview&&overlay?.frame===grid.frame&&state.now-overlay.scan_time<2){
+    const c0=Math.cos(est.yaw),s0=Math.sin(est.yaw),c1=Math.cos(initial.yaw),s1=Math.sin(initial.yaw);ctx.fillStyle='#ffb454';
+    for(const [x,y] of overlay.scan){const dx=x-est.x,dy=y-est.y,lx=c0*dx+s0*dy,ly=-s0*dx+c0*dy;
+      const p=worldToScreen(initial.x+c1*lx-s1*ly,initial.y+s1*lx+c1*ly);ctx.fillRect(p.x-1.5,p.y-1.5,3,3);}
+  }
+  arrow(ctx,initial,'#ffb454');arrow(ctx,selected||state?.goal,'#4da3ff');
+  const pose=state?.feedback.pose;if(!grid.preview&&pose&&pose.frame===grid.frame)arrow(ctx,pose,state.now-state.feedback.pose_time<2?'#3ecf8e':'#8b95a3');
+}
+function pointer(e){const p=canvasPoint(e);return screenToWorld(p.x,p.y);}
+function choose(e){
+  const end=pointer(e),p={...start,yaw:Math.hypot(end.x-start.x,end.y-start.y)>.03?Math.atan2(end.y-start.y,end.x-start.x):0};
+  if(tool==='initial')initial=p;else selectGoal(p);draw();
+}
+$('map').onpointerdown=e=>{
+  if(!grid)return;$('map').setPointerCapture(e.pointerId);
+  if(e.button===1||e.button===2||e.shiftKey){panning=true;e.preventDefault();return;}
+  start=pointer(e);dragging=true;choose(e);
+};
+$('map').onpointermove=e=>{
+  if(grid){const w=pointer(e);$('cursor').textContent=`x ${w.x.toFixed(2)} · y ${w.y.toFixed(2)}`;}
+  if(panning){const b=$('map').getBoundingClientRect();view.panX+=e.movementX*$('map').width/b.width;view.panY+=e.movementY*$('map').height/b.height;draw();}
+  else if(dragging)choose(e);
+};
+$('map').onpointerup=e=>{if(dragging)choose(e);dragging=false;panning=false;};
+$('map').onpointercancel=()=>{dragging=false;panning=false;};
+$('map').onpointerleave=()=>{$('cursor').textContent='';};
+async function sendDrive(v,w){if(driveBusy)return;driveBusy=true;try{await api('drive',{linear:v,angular:w});}catch(e){endDrive(false);error(e.message);}finally{driveBusy=false;}}
+// driveDir is a direction (-1/0/1 per axis); the sliders are read on every
+// send, so changing speed while holding a key takes effect at once.
+let driveDir=null;const keys=new Set();
+function driveVelocity(){const lin=Number($('lin').value),ang=Number($('ang').value),[dv,dw]=driveDir;
+  // Reverse deliberately stays slow: nobody watches behind __ROBOT__.
+  return[dv>0?lin:dv<0?-Math.min(lin,0.2):0,dw*ang];}
+function startDrive(dv,dw){
+  if(!mine){error('Enable motion in this browser first');return;}
+  driveDir=[dv,dw];if(!driveTimer){sendDrive(...driveVelocity());driveTimer=setInterval(()=>{if(driveDir)sendDrive(...driveVelocity());},100);}
+}
+function endDrive(sendZero=true){driveDir=null;if(driveTimer){clearInterval(driveTimer);driveTimer=null;if(sendZero)api('drive',{linear:0,angular:0}).catch(e=>error(e.message));}}
+function showSpeed(){
+  $('lin-val').textContent=Number($('lin').value).toFixed(2)+' m/s';$('ang-val').textContent=Number($('ang').value).toFixed(2)+' rad/s';
+  $('speed-note').textContent=`Reverse ${Math.min(Number($('lin').value),0.2).toFixed(2)} m/s. Hold a button or the arrow keys (↑+← curves). Needs Enable, not localization.`;
+}
+function speedLimits(maxLin,maxAng){
+  for(const [id,max] of [['lin',maxLin],['ang',maxAng]]){const el=$(id);if(Number(el.max)!==max){el.max=max;}
+    const saved=Number(localStorage.getItem('coffe-'+id));if(saved>0&&!el.dataset.restored){el.value=Math.min(saved,max);}el.dataset.restored=1;}
+  showSpeed();
+}
+for(const id of ['lin','ang'])$(id).oninput=()=>{localStorage.setItem('coffe-'+id,$(id).value);showSpeed();};
+showSpeed();
+for(const button of document.querySelectorAll('[data-v]')){
+  button.onpointerdown=e=>{e.preventDefault();if(!mine){error('Enable motion in this browser first');return;}button.setPointerCapture(e.pointerId);
+    startDrive(Number(button.dataset.v),Number(button.dataset.w));};
+  button.onpointerup=()=>endDrive();button.onpointercancel=()=>endDrive();button.onlostpointercapture=()=>endDrive();
+}
+const ARROWS={ArrowUp:1,ArrowDown:1,ArrowLeft:1,ArrowRight:1};
+function keyDrive(){
+  const dv=(keys.has('ArrowUp')?1:0)-(keys.has('ArrowDown')?1:0),dw=(keys.has('ArrowLeft')?1:0)-(keys.has('ArrowRight')?1:0);
+  if(!dv&&!dw)endDrive();else startDrive(dv,dw);
+}
+function typing(e){const t=e.target;return t&&(t.isContentEditable||['INPUT','TEXTAREA','SELECT'].includes(t.tagName))&&t.type!=='range'&&t.type!=='checkbox';}
+window.addEventListener('keydown',e=>{
+  if(e.code==='Escape'){e.preventDefault();keys.clear();action(stop);return;}
+  if(!ARROWS[e.code]||typing(e))return;e.preventDefault();
+  if(e.repeat&&keys.has(e.code))return;keys.add(e.code);keyDrive();
+});
+window.addEventListener('keyup',e=>{if(ARROWS[e.code]&&keys.delete(e.code))keyDrive();});
+function leave(){
+  keys.clear();endDrive(false);
+  if(mine){mine=false;fetch('/api/stop',{method:'POST',headers:{'Content-Type':'application/json','X-COFFE-Token':token},body:JSON.stringify({owner}),keepalive:true}).catch(()=>{});}
+}
+window.addEventListener('blur',()=>{keys.clear();endDrive();});window.addEventListener('pagehide',leave);
+document.addEventListener('visibilitychange',()=>{if(document.hidden)leave();});
+window.addEventListener('resize',draw);
+let fitNote='';
+function seedStatus(){
+  const s=state?.seed_pose,p=state?.feedback.pose;
+  if(fitNote)return fitNote;
+  if(!s)return'Yellow arrow = initial pose you will send. Works while enabled, as long as __ROBOT__ stands still.';
+  if(!p||state.feedback.pose_time<=state.seed_time)return'Initial pose sent; waiting for a new estimate from __ROBOT__…';
+  const d=Math.hypot(p.x-s.x,p.y-s.y),a=Math.abs(Math.atan2(Math.sin(p.yaw-s.yaw),Math.cos(p.yaw-s.yaw)));
+  return d<0.5&&a<0.35?`__ROBOT__ took the initial pose (green is ${d.toFixed(2)} m from it). Wait for "accurate", turn ↶ ↷ about 20° (or drive 20 cm) so AMCL corrects the click, then confirm.`
+    :`Green is ${d.toFixed(2)} m / ${(a*57.3).toFixed(0)}° from the pose you sent: __ROBOT__ moved it or ignored it. Check the laser dots; send again if needed.`;
+}
+function readiness(){
+  if(!state)return[];
+  const f=state.feedback,fresh=t=>state.now-t<2,v=f.pose?.variance;
+  return[
+    [!!grid&&!grid.preview&&!!state.map_id,"__ROBOT__'s own map loaded",'01 · Load __ROBOT__ map'],
+    [!state.remote_mode,'Robot not held by the remote','control mode: '+state.control_mode_name],
+    [fresh(f.odom_time)&&fresh(f.brake_time)&&!f.brake,'Odometry live, brake clear',''],
+    [state.seeded||state.localized,'Initial pose sent (skip if __ROBOT__ is already in the right place)','02 · optional',false],
+    [state.autopilot?.accuracy==='accurate','Autopilot reports accurate position',state.autopilot?state.autopilot.accuracy+' · send the initial pose':'no autopilot status'],
+    [state.localized&&fresh(f.pose_time),'Localization confirmed',state.laser_match?`${Math.round(state.laser_match[0]*100)}% of laser on walls (needs ${Math.round(state.match_min*100)}%)`:!v?'':`no laser overlay; uncertainty ${v[0].toFixed(3)} m² (needs < 0.25)`],
+    [!!state.clearance&&state.clearance.ok,'Start position clear of map walls',state.clearance&&!state.clearance.ok?`${state.clearance.metres.toFixed(2)} m from a map wall. Check localization and surroundings. Map-only hint, not a safe route: ${state.clearance.hint}`:''],
+    [mine,'Motion enabled in this browser','03 · Enable real base'],
+    [!!selected,'Destination selected','click a place or drag on the map'],
+    [$('goal-check').checked,'Destination checked','tick the box below'],
+  ];
+}
+function updateReady(){
+  const items=readiness();$('ready').replaceChildren();
+  for(const [ok,label,hint,required] of items){const li=document.createElement('li');li.className=ok?'ok':required===false?'opt':'no';li.textContent=label+(!ok&&hint?' · '+hint:'');$('ready').append(li);}
+  $('go').disabled=!state||!!state.goal||items.some(i=>!i[0]&&i[3]!==false);
+}
+async function poll(){
+  if(polling)return;polling=true;
+  try{
+    [state,overlay,connection]=await Promise.all([api('state'),api('overlay'),api('connection')]);const f=state.feedback,pose=f.pose, fresh=t=>state.now-t<2;
+    if(!state.enabled)mine=false;
+    $('mode').textContent=state.mode.toUpperCase();
+    $('mode').dataset.s=state.mode==='STOP UNCONFIRMED'?'bad':['navigating','manual'].includes(state.mode)?'active':state.mode==='ready'?'ok':'idle';
+    $('link-pill').textContent='link '+(fresh(f.odom_time)?'live':'stale');$('link-pill').dataset.s=fresh(f.odom_time)?'ok':'bad';
+    $('step-1').classList.toggle('done',!!grid&&!grid.preview&&!!state.map_id);
+    $('step-2').classList.toggle('done',state.localized&&fresh(f.pose_time));
+    $('step-3').classList.toggle('done',mine);
+    $('step-4').classList.toggle('done',!!state.goal);
+    $('identity').textContent=(connection.name||'Real Avular')+' · real Avular · ROS 2';
+    $('robot-name').textContent=connection.name||'—';
+    $('robot-ip').textContent=connection.ip||'—';
+    const battery=f.battery?`${f.battery.percent}% · ${f.battery.voltage.toFixed(1)} V`+(state.now-f.battery_time<15?'':' · STALE'):'unavailable';
+    $('battery').textContent=battery;$('battery-pill').textContent='battery '+(f.battery?f.battery.percent+'%':'—');
+    $('control-mode').textContent=state.control_mode_name;$('control-pill').textContent='control: '+state.control_mode_name;
+    $('control-pill').style.color=state.remote_mode?'var(--fail)':'var(--warn)';
+    $('remote-warning').style.display=state.remote_mode?'block':'none';
+    $('remote-warning').textContent=state.remote_mode?`__ROBOT__ is in ${state.remote_mode} mode: the remote has control and __ROBOT__ refuses the dashboard. Release control on the remote, then enable.`:'';
+    $('ros-link').textContent=fresh(f.odom_time)?'live':'STALE / disconnected';
+    const wifi=connection.host_wifi,network=f.network;
+    $('wifi-name').textContent=wifi?(wifi.ssid||wifi.state||'not connected'):connection.host_status;
+    $('wifi-signal').textContent=wifi&&Number.isFinite(wifi.signal)?wifi.signal+'% · '+wifi.adapter:'unavailable';
+    const strengths={'-1':'unknown',0:'not connected',1:'poor',2:'fair',3:'excellent'};
+    $('robot-wifi').textContent=network?(network.ssid||'no SSID')+(network.strength>0?' · '+strengths[network.strength]:'')+(state.now-f.network_time<15?'':' · STALE'):'unavailable';
+    $('connection-note').textContent=wifi?(wifi.matches?'Laptop Wi-Fi matches '+connection.name+'. ':'WARNING: laptop Wi-Fi does not match '+connection.name+' ('+connection.wifi_suffix+'). '+(wifi.known_robot?'Detected '+wifi.known_robot+'. ':''))+'Chud = RK5 · Ronaldo = CR7.':'Run Watch-Wifi.ps1 for laptop SSID and signal. Chud = RK5 · Ronaldo = CR7.';
+    $('connection-note').style.color=wifi&&!wifi.matches?'var(--fail)':'var(--dim)';
+    $('odom').textContent=fresh(f.odom_time)?'receiving':'STALE / absent';
+    $('brake').textContent=!fresh(f.brake_time)?'STALE / absent':f.brake?'ACTIVE':'clear';
+    $('localized').textContent=state.localized&&fresh(f.pose_time)?'confirmed':'not confirmed';
+    const m=state.laser_match;$('match').textContent=m?`${Math.round(m[0]*100)}% of ${m[1]} pts (needs ${Math.round(state.match_min*100)}%)`:'no laser overlay';
+    $('match').style.color=m?(m[0]>=state.match_min?'var(--pass)':'var(--fail)'):'var(--dim)';
+    speedLimits(state.max_linear,state.max_angular);
+    $('variance').textContent=pose?.variance?`${pose.variance[0].toFixed(2)} m² · ${pose.variance[2].toFixed(2)} rad²`:'—';
+    $('position').textContent=pose?`${pose.x.toFixed(2)}, ${pose.y.toFixed(2)}`:'—';
+    $('heading').textContent=pose?pose.yaw.toFixed(2):'—';$('speed').textContent=f.speed.toFixed(3);
+    $('hold').textContent=state.holding_user?'zero / manual':'no';
+    $('enable').disabled=state.enabled;
+    $('load').disabled=$('load-chud').disabled=$('load-sim').disabled=state.enabled;
+    if(state.default_map&&!$('load-chud').textContent.startsWith('Loading'))$('load-chud').textContent='Load __ROBOT__ map · '+state.default_map.name;
+    $('behavior').textContent=state.behavior||'no status yet';
+    const cl=state.clearance;$('clearance').textContent=cl?cl.metres.toFixed(2)+' m'+(cl.ok?'':' · TOO CLOSE: '+cl.hint):'—';
+    $('clearance').style.color=cl?(cl.ok?'var(--pass)':'var(--fail)'):'var(--dim)';
+    const ap=state.autopilot;$('accuracy').textContent=ap?ap.accuracy+(ap.accuracy!=='accurate'&&ap.behavior?' · '+ap.behavior:''):'no status';
+    $('accuracy').style.color=ap?(ap.accuracy==='accurate'?'var(--pass)':'var(--fail)'):'var(--dim)';
+    $('fit').disabled=$('seed').disabled=$('seed-from-goal').disabled=state.preview||!state.map_id||!!state.goal;
+    $('seed-status').textContent=seedStatus();$('confirm-loc').disabled=state.preview||!!state.goal;
+    $('save-goal').disabled=$('save-here').disabled=!state.map_id||state.preview;
+    $('map-warning').textContent=!grid?'Load an onboard map to localize.':state.preview?'PREVIEW ONLY: this map is not stored on __ROBOT__, so it cannot localize or navigate on it. Use "Load __ROBOT__ map".':"__ROBOT__'s own map. Check that the pink laser dots match the walls before confirming localization.";
+    $('overlay-status').textContent='Laser: '+(fresh(overlay.scan_time)?overlay.scan_status:'stale · '+overlay.scan_status)+' | Plan: '+(state.now-overlay.path_time<5?overlay.path_status:'none · '+overlay.path_status);
+    const run=state.goal||state.last_run;
+    $('progress').textContent=run?`${run.driven.toFixed(2)} m driven · ${run.remaining.toFixed(2)} m remaining`+(state.goal?' · navigating':' · '+run.ended):'No goal sent this session.';
+    $('log').textContent=state.events.join('\n');$('log').scrollTop=$('log').scrollHeight;
+    updateReady();placesNote();draw();
+  }catch(e){error('Dashboard connection: '+e.message);leave();}finally{polling=false;}
+}
+setInterval(()=>{if(mine&&!document.hidden)api('heartbeat',{}).catch(()=>leave());},400);
+setInterval(poll,500);poll().then(()=>fetchMap()).catch(e=>error(e.message));
+</script>
+</body>
+</html>
