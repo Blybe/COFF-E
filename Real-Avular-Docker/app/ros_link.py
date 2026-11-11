@@ -29,6 +29,10 @@ from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformListener
 
 
+def seconds(stamp):
+    return stamp.sec + stamp.nanosec * 1e-9
+
+
 def yaw_of(q):
     return math.atan2(2 * (q.w * q.z + q.x * q.y),
                       1 - 2 * (q.y * q.y + q.z * q.z))
@@ -77,6 +81,7 @@ class Robot:
                          "scan_status": "Waiting for laser scan", "path_status": "Waiting for onboard plan",
                          "frame": self.frame}
         self.tf_buffer = Buffer()
+        self.description_tf = []
         self.tf_listener = TransformListener(self.tf_buffer, self.node)
         self.velocity_pub = self.node.create_publisher(Twist, "/robot/cmd_vel_user", 10)
         self.seed_pub = self.node.create_publisher(PoseWithCovarianceStamped, self.seed_topic, 10)
@@ -129,8 +134,15 @@ class Robot:
         t = msg.twist.twist
         if not all(math.isfinite(v) for v in (t.linear.x, t.linear.y, t.angular.z)):
             return
+        stamp = msg.header.stamp
         with self.lock:
-            self.odom_stamp = msg.header.stamp
+            previous, self.odom_stamp = self.odom_stamp, stamp
+        # Switching hotspots or rebooting the robot restarts its clock. The TF
+        # buffer would then reject every newer transform as TF_OLD_DATA (no
+        # laser overlay) until the container restarts, so start it afresh.
+        if previous is not None and seconds(stamp) < seconds(previous) - 1.0:
+            self.reset_tf()
+        with self.lock:
             self.values.update(odom_time=time.monotonic(),
                                speed=max(math.hypot(t.linear.x, t.linear.y), abs(t.angular.z)))
 
@@ -149,13 +161,26 @@ class Robot:
             joints = fixed_joints(msg.data)
         except Exception:
             return
+        transforms = []
         for parent, child, xyz, quat in joints:
             t = TransformStamped()
             t.header.frame_id, t.child_frame_id = parent, child
             t.transform.translation.x, t.transform.translation.y, t.transform.translation.z = xyz
             (t.transform.rotation.x, t.transform.rotation.y,
              t.transform.rotation.z, t.transform.rotation.w) = quat
+            transforms.append(t)
+        self.description_tf = transforms
+        for t in transforms:
             self.tf_buffer.set_transform_static(t, "robot_description")
+
+    def reset_tf(self):
+        self.tf_buffer.clear()
+        for t in self.description_tf:
+            self.tf_buffer.set_transform_static(t, "robot_description")
+        with self.lock:
+            self.overlays.update(scan=[], path=[], scan_time=-1e9, path_time=-1e9,
+                                 scan_status="Robot clock restarted; waiting for new TF",
+                                 path_status="Robot clock restarted; waiting for new TF")
 
     def _brake(self, msg):
         with self.lock:

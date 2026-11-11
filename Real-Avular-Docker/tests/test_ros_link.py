@@ -267,6 +267,26 @@ class AdapterTests(unittest.TestCase):
         self.assertFalse(self.robot.load_map("abc")["already_active"])
         self.assertTrue(self.robot._call.call_args.args[0].endswith("load_localization_map"))
 
+    def odom(self, sec):
+        twist = SimpleNamespace(linear=SimpleNamespace(x=0.0, y=0.0), angular=SimpleNamespace(z=0.0))
+        self.robot._odom(SimpleNamespace(header=SimpleNamespace(stamp=SimpleNamespace(sec=sec, nanosec=0)),
+                                         twist=SimpleNamespace(twist=twist)))
+
+    def test_robot_clock_restart_resets_tf_and_keeps_lidar_mount(self):
+        self.robot.values, self.robot.odom_stamp = {}, None
+        self.robot.tf_buffer, self.robot.description_tf = Mock(), ["ouster mount"]
+        self.robot.overlays = {"scan": [[1, 2]], "scan_time": 100}
+        for sec in (5000, 5001, 5000.5):
+            self.odom(sec)
+        self.robot.tf_buffer.clear.assert_not_called()
+        self.odom(1437)
+        self.robot.tf_buffer.clear.assert_called_once()
+        self.robot.tf_buffer.set_transform_static.assert_called_once_with("ouster mount", "robot_description")
+        self.assertEqual((self.robot.overlays["scan"], self.robot.overlays["scan_time"]), ([], -1e9))
+        self.assertEqual(self.robot.odom_stamp.sec, 1437)
+        self.odom(1438)
+        self.robot.tf_buffer.clear.assert_called_once()
+
     def test_fixed_urdf_joints_give_lidar_mount(self):
         urdf = """<robot name="o"><link name="base_link"/><link name="main_body"/><link name="ouster_base"/>
           <link name="wheel"/>

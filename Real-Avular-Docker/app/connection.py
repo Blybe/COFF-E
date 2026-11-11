@@ -1,6 +1,7 @@
 """Read-only laptop Wi-Fi snapshot; never reads wireless credentials."""
 
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -16,10 +17,27 @@ ROBOTS = {
 
 
 class Source:
-    def __init__(self, path, name, suffix, ip, clock=time.time, default_map=None):
-        self.path, self.clock = Path(path), clock
+    def __init__(self, path, name, suffix, ip, clock=time.time, default_map=None,
+                 monotonic=time.monotonic):
+        self.path, self.clock, self.monotonic = Path(path), clock, monotonic
         self.name, self.suffix, self.ip = name, suffix, ip
         self.default_map = default_map
+        self._lock = threading.Lock()
+        self._last_updated = None
+        self._changed_at = None
+
+    def _fresh(self, updated):
+        # The Docker Desktop VM clock can drift from Windows (e.g. after
+        # sleep), so a timestamp that keeps advancing also proves the monitor
+        # is alive, measured on this process's own monotonic clock.
+        with self._lock:
+            now = self.monotonic()
+            if self._last_updated is not None and updated != self._last_updated:
+                self._changed_at = now if updated > self._last_updated else None
+            self._last_updated = updated
+            if self._changed_at is not None and now - self._changed_at < 15:
+                return True
+        return 0 <= self.clock() - updated < 15
 
     def snapshot(self):
         result = {"name": "Unknown robot", "wifi_suffix": None, "ip": self.ip,
@@ -29,8 +47,7 @@ class Source:
             data = json.loads(self.path.read_text(encoding="utf-8-sig"))
             if not isinstance(data, dict):
                 return result
-            age = self.clock() - float(data["updated"])
-            if not 0 <= age < 15:
+            if not self._fresh(float(data["updated"])):
                 result["host_status"] = "Laptop Wi-Fi monitor stale"
                 return result
             wifi = {k: data.get(k) for k in ("adapter", "ssid", "signal", "state")}

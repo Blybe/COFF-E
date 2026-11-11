@@ -48,17 +48,41 @@ class ConnectionTests(unittest.TestCase):
     def test_unknown_disconnected_ambiguous_or_stale_never_uses_configured_identity(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "wifi.json"
-            source = Source(path, "Ronaldo", "CR7", "", clock=lambda: 100)
             for changes in ({"ssid": "eduroam"}, {"ssid": "OtherCR7"},
                             {"ssid": "Origin somethingCR7"}, {"state": "disconnected"},
                             {"ambiguous": True}, {"updated": 85}, {"updated": 101}):
                 value = {"updated": 100, "ssid": "Origin PB4U9CR7", "state": "connected"}
                 value.update(changes)
                 path.write_text(json.dumps(value))
-                result = source.snapshot()
+                result = Source(path, "Ronaldo", "CR7", "", clock=lambda: 100).snapshot()
                 self.assertFalse(result["detected"], changes)
                 self.assertEqual(result["name"], "Unknown robot")
                 self.assertIsNone(result["default_map"])
+
+    def test_advancing_monitor_is_live_despite_docker_clock_skew(self):
+        for skew in (-3600, 3600):
+            with tempfile.TemporaryDirectory() as folder:
+                path = Path(folder) / "wifi.json"
+                tick = [0.0]
+                source = Source(path, "Chud", "RK5", "", clock=lambda: 1000 + skew,
+                                monotonic=lambda: tick[0])
+
+                def write(updated):
+                    path.write_text(json.dumps({"updated": updated, "state": "connected",
+                                                "ssid": "Origin PB4U9RK5"}))
+                    return source.snapshot()
+
+                self.assertFalse(write(1000)["detected"], "one skewed reading is not proof")
+                tick[0] = 3
+                self.assertTrue(write(1003)["detected"], skew)
+                tick[0] = 17
+                self.assertTrue(source.snapshot()["detected"], "within 15 s of last change")
+                tick[0] = 18.5
+                value = source.snapshot()
+                self.assertFalse(value["detected"], "monitor stopped")
+                self.assertEqual(value["host_status"], "Laptop Wi-Fi monitor stale")
+                tick[0] = 19
+                self.assertFalse(write(990)["detected"], "older snapshot is not progress")
 
     def test_case_insensitive_exact_ssid(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -74,4 +98,5 @@ class ConnectionTests(unittest.TestCase):
             self.assertIsNone(source.snapshot()["host_wifi"])
             for value in ('{', 'null', '[]', '{"updated": 1}', '{"updated": 101}', '{"updated": "bad"}'):
                 path.write_text(value)
-                self.assertIsNone(source.snapshot()["host_wifi"])
+                self.assertIsNone(Source(path, "Chud", "RK5", "", clock=lambda: 100)
+                                  .snapshot()["host_wifi"], value)

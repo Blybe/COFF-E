@@ -33,6 +33,7 @@ header .inner{display:flex;align-items:center;gap:10px;flex-wrap:wrap;width:100%
   background:linear-gradient(135deg,var(--accent),#22d3ee);box-shadow:0 0 18px #38bdf855}
 h1{font-size:15px;letter-spacing:3px;margin:0;font-weight:800}
 #identity{display:block;color:var(--dim);font-size:11px;letter-spacing:.5px;text-transform:uppercase}
+.authors{display:block;color:var(--dim);font-size:10.5px;opacity:.8}
 .chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
 .pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line2);background:var(--panel2);border-radius:999px;
   padding:3px 11px;color:var(--warn);font:600 11px/1.6 var(--mono);text-transform:uppercase;letter-spacing:.4px}
@@ -161,9 +162,17 @@ label.speed b{text-align:right;font:600 12px var(--mono);color:var(--text)}
 /* ---------- messages ---------- */
 #error{display:none;margin:12px clamp(12px,1.5vw,28px) 0;border:1px solid #7f1d24;background:#2a0f13ee;padding:10px 14px;border-radius:10px;color:#fecaca;box-shadow:0 0 24px #e5484d33}
 #error::before{content:"⚠ ";font-weight:700}
+#error summary{cursor:pointer;list-style:none}#error summary::-webkit-details-marker{display:none}
+#error-title{font-weight:700}#error-hint{display:block;margin-top:3px;color:#fde2e2}
+#error .more{display:inline-block;margin-top:5px;font-size:11px;color:#fca5a5;text-decoration:underline dotted}
+#error .more::after{content:"Show technical details"}#error[open] .more::after{content:"Hide technical details"}
+#error-raw{margin:8px 0 0;padding:8px 10px;border-radius:8px;background:#0006;font:12px/1.5 var(--mono);white-space:pre-wrap;color:#fecaca}
+#error.plain .more,#error.plain #error-raw{display:none}
+.log-tools{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+.log-tools button{padding:5px 10px;font-size:11px}.log-tools .note{margin:0 0 0 auto}
 .warnbox{border:1px solid #6b5326;background:#2a2112;color:#fde68a;border-radius:8px;padding:7px 9px;font-size:12px;margin:8px 0;display:none}
 #log-panel{display:flex;flex-direction:column}
-#log{height:170px;overflow:auto;white-space:pre-wrap;margin:0;padding:10px 12px;border-radius:10px;background:#04070b;border:1px solid var(--line);
+#log{height:170px;min-height:80px;resize:vertical;overflow:auto;white-space:pre-wrap;margin:0;padding:10px 12px;border-radius:10px;background:#04070b;border:1px solid var(--line);
   font:11.5px/1.6 var(--mono);color:#9fb3c8}
 ::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:#1f2c3d;border-radius:6px;border:2px solid transparent;background-clip:padding-box}
 
@@ -173,6 +182,7 @@ label.speed b{text-align:right;font:600 12px var(--mono);color:var(--text)}
 .view-controls>button[aria-pressed=true]{color:var(--accent);border-color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,var(--panel))}
 .theme-control{display:flex;align-items:center;gap:6px;color:var(--dim);font-size:11px}
 .theme-control select{width:auto;padding:6px 25px 6px 9px;font-size:11px}
+.version{color:var(--dim);border:1px solid var(--line2);border-radius:999px;padding:3px 9px;font:600 11px/1.6 var(--mono);white-space:nowrap}
 .stop{margin-left:0}
 .panel,#robot-panel>.card{background:linear-gradient(180deg,color-mix(in srgb,var(--panel) 94%,white),var(--panel))}
 .brand .logo{background:linear-gradient(135deg,var(--accent),var(--accent2));box-shadow:0 0 18px rgba(var(--accent-rgb),.25)}
@@ -225,13 +235,13 @@ body[data-theme=light] .stepper button.active i{color:white}
 @media(max-width:1280px){main{grid-template-columns:280px minmax(0,1fr);grid-template-areas:"flow map" "telem telem" "log log"}
   #robot-panel{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));align-items:start}}
 @media(max-width:900px){.chips{order:3;width:100%}.view-controls{margin-left:auto}.stop{min-width:160px}}
-@media(max-width:760px){main{display:flex;flex-direction:column}#robot-panel{display:flex}#map{height:360px}.stop{margin-left:0;width:100%}.view-controls{margin-left:0;width:100%}.theme-control{margin-left:auto}}
+@media(max-width:760px){main{display:flex;flex-direction:column}#robot-panel{display:flex}#map{height:360px}.stop{margin-left:0;width:100%}.view-controls{margin-left:0;width:100%}.theme-control{margin-left:auto}.view-controls,.stop{order:2}.version{margin-left:auto}}
 @media(prefers-reduced-motion:reduce){.step.active{animation:none}*{scroll-behavior:auto!important}}
 </style>
 </head>
 <body>
 <header><div class="inner">
-<div class="brand"><div class="logo">C</div><div><h1>COFF-E</h1><small id="identity">REAL AVULAR</small></div></div>
+<div class="brand"><div class="logo">C</div><div><h1>COFF-E</h1><small id="identity">REAL AVULAR</small><small class="authors">Authors: Robin van den Dungen &amp; Ian Kolsteeg</small></div></div>
 <div class="chips"><span class="pill" id="mode" data-s="idle">CONNECTING</span><span class="pill" id="link-pill" data-s="idle">link —</span><span class="pill" id="control-pill">control: —</span><span class="pill" id="battery-pill">battery —</span></div>
 <div class="view-controls" aria-label="Display preferences">
 <button id="compact-toggle" type="button" aria-pressed="false" title="Reduce spacing and text size">Compact</button>
@@ -239,8 +249,9 @@ body[data-theme=light] .stepper button.active i{color:white}
 <label class="theme-control">Theme <select id="theme-select" aria-label="Colour theme"><option value="robot">Robot (automatic)</option><option value="midnight">Midnight blue</option><option value="forest">Forest green</option><option value="violet">Violet</option><option value="light">Light</option></select></label>
 </div>
 <button class="danger stop" id="stop">STOP / HOLD (Esc)</button>
+<span class="version" id="version" title="Dashboard version">v1.2</span>
 </div></header>
-<div id="error" role="alert"></div>
+<details id="error" role="alert"><summary><span id="error-title"></span><span id="error-hint"></span><span class="more"></span></summary><pre id="error-raw"></pre></details>
 <main>
 <section class="panel" id="flow">
 <nav class="stepper" id="stepper" aria-label="Workflow steps">
@@ -330,7 +341,9 @@ body[data-theme=light] .stepper button.active i{color:white}
 <button id="release" class="wide">Release USER control after stop</button>
 <p class="note">Keep this tab visible while driving; hiding it stops the robot.</p></details>
 </section>
-<details class="panel" id="log-panel" data-panel="log" open><summary><h2>Activity log</h2></summary><pre id="log"></pre></details>
+<details class="panel" id="log-panel" data-panel="log" open><summary><h2>Activity log</h2></summary>
+<div class="log-tools"><button id="log-copy" type="button" title="Copy the log to share it">Copy log</button><button id="log-latest" type="button" hidden>Jump to latest ↓</button><span class="note" id="log-copied" role="status"></span></div>
+<pre id="log" tabindex="0" aria-label="Activity log"></pre></details>
 </main>
 <script>
 'use strict';
@@ -383,7 +396,53 @@ function initDisplay(){
   }
   applyTheme();
 }
-function error(message){$('error').textContent=message;$('error').style.display=message?'block':'none';}
+// Plain-language versions of the server's error messages. The original text
+// stays one click away under "technical details" for whoever debugs it.
+const FRIENDLY=[
+  [/STOP UNCONFIRMED|stop is unconfirmed/i,'The robot did not confirm that it stopped.','Use the physical emergency stop now, then check the activity log.'],
+  [/^Dashboard connection|Failed to fetch|NetworkError/i,'The dashboard lost contact with its server.','Check that Docker is running (docker compose ps), then reload this page.'],
+  [/odometry/i,'The robot is not sending movement data.','Check that the robot is switched on and this laptop is on its Wi-Fi. Then run: docker compose restart zenoh-bridge.'],
+  [/Emergency-brake/i,'The robot reports its emergency brake (or no brake status).','Release the emergency stop on the robot and wait a few seconds.'],
+  [/heartbeat/i,'This browser lost control of the robot.','Keep this tab visible while driving. Press STOP, then enable again.'],
+  [/refuses dashboard control/i,'The remote control has control of the robot.','Release control on the remote, then try again.'],
+  [/safety checklist/i,'Tick the safety checklist first.','It is in step 3 (Enable).'],
+  [/Enable motion in this browser|Enable motion \(or press STOP\)/i,'Motion is not enabled in this browser.','Go to step 3 (Enable) first.'],
+  [/Already enabled/i,'Motion is already enabled.','Press STOP first if someone else should take over.'],
+  [/autopilot still reports/i,'The robot is not yet sure where it is.','Send the initial pose again, or turn in place a little, until "Autopilot position" says accurate.'],
+  [/from a wall on the map/i,'The robot is too close to a wall on the map to start driving.','Drive it a little away from the wall by hand, then try again.'],
+  [/unknown or occupied space|outside the selected map/i,'That spot is not open floor on the map.','Pick a point in the light (free) area of the map.'],
+  [/Localization lost/i,'The robot lost track of where it is, so it was stopped.','Localize again (step 2) before driving.'],
+  [/Navigation deadline/i,'The drive took too long, so it was stopped.','Check the route and try again with a closer goal.'],
+  [/Autopilot gave up/i,'The robot could not reach the goal and stopped.','Check the activity log for the robot\'s reason, then try another goal.'],
+  [/Load the robot's|Load an onboard map|Load a map, seed pose/i,'Load and localize the robot\'s map first.','Do step 1 (Map) and step 2 (Localize).'],
+  [/Tick "Pose, heading and laser/i,'Confirm that the position looks right first.','Tick the box under the map once the pink laser dots line up with the walls.'],
+  [/initial pose was not delivered/i,'The starting position did not reach the robot.','Click "Send initial pose" again.'],
+  [/Initial pose route absent/i,'The robot is not listening for a starting position.','Check the ROS link in the header, then run: docker compose restart zenoh-bridge.'],
+  [/No new estimated pose|No estimated pose|Localization pose is (stale|invalid)/i,'The robot is not reporting its position on the map.','Wait a few seconds and check the ROS link. Send the initial pose again if needed.'],
+  [/standing still/i,'Wait until the robot stands still.',''],
+  [/^Stop |Stop navigation before|Stop the current|Release the drive buttons/i,'Stop the robot first.','Press STOP / HOLD, then try again.'],
+  [/PREVIEW|preview map/i,'This map is only a preview; it is not stored on the robot.','Use the "Load … map" button for the robot\'s own map.'],
+  [/frame/i,'The map and the robot position use different coordinate frames.','Check NAV_FRAME in .env (see docs/troubleshooting.md).'],
+  [/No fresh laser scan/i,'There is no live laser data right now.','Wait until the pink laser dots appear on the map.'],
+  [/Manual limits/i,'That speed is above the allowed limit.',''],
+  [/timed out/i,'The robot did not answer in time.','The command may still have arrived. Watch the robot, press STOP if needed, and check the Wi-Fi.'],
+  [/unavailable$/i,'A robot service cannot be reached.','Check the ROS link and Wi-Fi, then run: docker compose restart zenoh-bridge.'],
+];
+function explain(message){
+  const hit=FRIENDLY.find(([pattern])=>pattern.test(message));
+  return hit?{title:hit[1],hint:hit[2]}:{title:message,hint:''};
+}
+let lastError='';
+function error(message){
+  const box=$('error');
+  if((message||'')===lastError)return;
+  lastError=message||'';
+  const e=explain(lastError);
+  $('error-title').textContent=lastError?e.title:'';$('error-hint').textContent=lastError?e.hint:'';
+  $('error-raw').textContent=lastError;
+  box.classList.toggle('plain',e.title===lastError);box.open=false;
+  box.style.display=lastError?'block':'none';
+}
 async function api(path,body){
   const options=body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json','X-COFFE-Token':token},body:JSON.stringify({...body,owner})};
   const response=await fetch('/api/'+path,options), result=await response.json();
@@ -774,10 +833,28 @@ async function poll(){
     $('overlay-status').textContent='Laser: '+(fresh(overlay.scan_time)?overlay.scan_status:'stale · '+overlay.scan_status)+' | Plan: '+(state.now-overlay.path_time<5?overlay.path_status:'none · '+overlay.path_status);
     const run=state.goal||state.last_run;
     $('progress').textContent=run?`${run.driven.toFixed(2)} m driven · ${run.remaining.toFixed(2)} m remaining`+(state.goal?' · navigating':' · '+run.ended):'No goal sent this session.';
-    $('log').textContent=state.events.join('\n');$('log').scrollTop=$('log').scrollHeight;
+    const logBox=$('log'),logText=state.events.join('\n');
+    if(logBox.textContent!==logText){
+      // Only follow new lines when the reader is already at the bottom.
+      const atEnd=logBox.scrollHeight-logBox.scrollTop-logBox.clientHeight<24;
+      logBox.textContent=logText;
+      if(atEnd)logBox.scrollTop=logBox.scrollHeight;
+    }
+    logPosition();
     updateReady();updateDistances();placesNote();draw();
   }catch(e){error('Dashboard connection: '+e.message);leave();}finally{polling=false;}
 }
+function logPosition(){const b=$('log');$('log-latest').hidden=b.scrollHeight-b.scrollTop-b.clientHeight<24;}
+$('log').addEventListener('scroll',logPosition);
+$('log-latest').onclick=()=>{$('log').scrollTop=$('log').scrollHeight;logPosition();};
+$('log-copy').onclick=async()=>{
+  const text=['COFF-E dashboard '+$('version').textContent+' · '+$('robot-name').textContent+' · copied '+new Date().toLocaleString(),
+    lastError?'Current error: '+lastError:'','',$('log').textContent].filter((line,i)=>line||i>1).join('\n');
+  try{await navigator.clipboard.writeText(text);}
+  catch{const area=document.createElement('textarea');area.value=text;document.body.append(area);area.select();document.execCommand('copy');area.remove();}
+  $('log-copied').textContent='Copied '+$('log').textContent.split('\n').filter(Boolean).length+' lines';
+  setTimeout(()=>$('log-copied').textContent='',3000);
+};
 initDisplay();
 new ResizeObserver(()=>requestAnimationFrame(draw)).observe($('map'));
 setInterval(()=>{if(mine&&!document.hidden)api('heartbeat',{}).catch(()=>leave());},400);

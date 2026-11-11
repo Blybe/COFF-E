@@ -38,7 +38,7 @@ services:
       MANUAL_MAX_LINEAR: "${MANUAL_MAX_LINEAR:-0.6}"
       MANUAL_MAX_ANGULAR: "${MANUAL_MAX_ANGULAR:-1.0}"
     volumes:
-      - ../cerebra-data/maps:/sim_maps:ro
+      - ${SIM_MAPS_DIR:-./maps}:/sim_maps:ro
       - ./status:/host_status:ro
       # Saved places are written here so they survive rebuilds.
       - ./places:/places

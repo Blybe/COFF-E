@@ -217,7 +217,7 @@ class Controller:
         self.goal = None
         self.holding = False
         self.stop_verified = False
-        self.events = deque(maxlen=100)
+        self.events = deque(maxlen=500)
         self.log("Read-only startup. Motion is disabled.")
         self.sim_info = None
         if sim_map is not None:
