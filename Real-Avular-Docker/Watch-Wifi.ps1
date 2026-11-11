@@ -1,6 +1,6 @@
 # Read-only Windows WLAN monitor for the dashboard. No credentials are queried.
 param(
-    [string]$Adapter = 'WiFi 2',
+    [string]$Adapter = '',
     [switch]$Once
 )
 
@@ -30,10 +30,18 @@ try {
                 }
             }
         }
-        $wifi = $interfaces | Where-Object { $_.adapter -eq $Adapter } | Select-Object -First 1
+        $robots = @($interfaces | Where-Object {
+            $_.state -eq 'connected' -and $_.ssid -in @('Origin PB4U9RK5', 'Origin PB4U9CR7')
+        })
+        $ambiguous = $robots.Count -gt 1
+        $wifi = if ($ambiguous) { $null } elseif ($Adapter) {
+            $interfaces | Where-Object { $_.adapter -eq $Adapter } | Select-Object -First 1
+        } else { $robots | Select-Object -First 1 }
         $snapshot = @{updated = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() / 1000.0
-                      adapter = $Adapter; state = 'unavailable'; ssid = $null; signal = $null}
+                      adapter = $Adapter; state = 'unavailable'; ssid = $null; signal = $null
+                      ambiguous = $ambiguous}
         if ($wifi) {
+            $snapshot.adapter = $wifi.adapter
             foreach ($key in @('state', 'ssid', 'signal')) { $snapshot[$key] = $wifi[$key] }
         }
         [System.IO.File]::WriteAllText("$path.tmp", ($snapshot | ConvertTo-Json -Compress),

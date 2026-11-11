@@ -18,6 +18,12 @@ def make_handler(controller, token, connection=None, robot_name="the robot"):
         def log_message(self, *_):
             pass
 
+        def state(self):
+            value = controller.snapshot()
+            if connection:
+                value["default_map"] = connection.snapshot()["default_map"]
+            return value
+
         def reply(self, code, body, content_type="application/json"):
             data = body.encode("utf-8") if isinstance(body, str) else json.dumps(body, allow_nan=False).encode("utf-8")
             self.send_response(code)
@@ -33,9 +39,9 @@ def make_handler(controller, token, connection=None, robot_name="the robot"):
             try:
                 if self.path == "/":
                     page = Path(__file__).with_name("index.html").read_text(encoding="utf-8")
-                    return self.reply(200, page.replace("__TOKEN__", token).replace("__ROBOT__", html.escape(robot_name)), "text/html; charset=utf-8")
+                    return self.reply(200, page.replace("__TOKEN__", token).replace("__ROBOT__", html.escape("the robot" if connection else robot_name)), "text/html; charset=utf-8")
                 if self.path == "/api/state":
-                    return self.reply(200, controller.snapshot())
+                    return self.reply(200, self.state())
                 if self.path == "/api/maps":
                     return self.reply(200, controller.list_maps())
                 if self.path == "/api/map":
@@ -92,9 +98,11 @@ def make_handler(controller, token, connection=None, robot_name="the robot"):
                     return self.reply(200, controller.save_place(body["name"], body["x"], body["y"], body["yaw"]))
                 elif self.path == "/api/places/delete":
                     return self.reply(200, controller.delete_place(body["name"]))
+                elif self.path == "/api/places/rename":
+                    return self.reply(200, controller.rename_place(body["name"], body["new_name"]))
                 else:
                     return self.reply(404, {"error": "Not found"})
-                self.reply(200, controller.snapshot())
+                self.reply(200, self.state())
             except (ValueError, KeyError, TypeError) as exc:
                 self.reply(400, {"error": str(exc)})
             except Exception as exc:
@@ -123,7 +131,7 @@ def main():
     quit_event = threading.Event()
     connection = Connection("/host_status/wifi.json", os.environ.get("ROBOT_NAME", "Chud"),
                             os.environ.get("ROBOT_WIFI_SUFFIX", "RK5"),
-                            os.environ.get("REAL_ROBOT_IP", ""))
+                            os.environ.get("REAL_ROBOT_IP", ""), default_map=controller.default_map)
     server = ThreadingHTTPServer(("0.0.0.0", 8080),
                                 make_handler(controller, secrets.token_hex(32), connection,
                                              os.environ.get("ROBOT_NAME", "the robot")))

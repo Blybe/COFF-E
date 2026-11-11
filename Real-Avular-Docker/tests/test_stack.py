@@ -686,6 +686,24 @@ class RemoteModeAndPlacesTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             store.save("lab", "", 1, 1, 0)
 
+    def test_rename_place_keeps_pose_and_refuses_clashes(self):
+        with self.assertRaisesRegex(ValueError, "Load an onboard map"):
+            self.c.rename_place("Home", "Base")
+        self.c.load_map("lab")
+        self.c.save_place("Home", 1, 2, 0.5)
+        self.c.save_place("Coffee", 4, 3, 0)
+        before = list(self.robot.calls)
+        self.assertEqual(self.c.rename_place("Home", "  Base "),
+                         [{"name": "Base", "x": 1, "y": 2, "yaw": 0.5}, {"name": "Coffee", "x": 4, "y": 3, "yaw": 0}])
+        self.assertEqual(self.robot.calls, before)
+        with self.assertRaisesRegex(ValueError, "already exists"):
+            self.c.rename_place("Base", "Coffee")
+        with self.assertRaisesRegex(ValueError, "No saved place"):
+            self.c.rename_place("Missing", "X")
+        with self.assertRaisesRegex(ValueError, "1-40"):
+            self.c.rename_place("Base", " ")
+        self.assertEqual([p["name"] for p in self.c.list_places()], ["Base", "Coffee"])
+
     def test_snapshot_reports_seed_and_default_map(self):
         self.assertFalse(self.c.snapshot()["seeded"])
         self.c.load_map("lab")
@@ -716,6 +734,44 @@ class SimMapTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             with self.assertRaisesRegex(ValueError, "not found"):
                 Source(folder, "missing").grid("map")
+
+
+class HttpDetectionTests(unittest.TestCase):
+    def test_live_identity_and_map_shortcut_switch_without_robot_commands(self):
+        from connection import Source as Connection
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "wifi.json"
+            source = Connection(path, "Ronaldo", "CR7", "192.168.192.1", clock=lambda: 100)
+            robot = FakeRobot(Clock())
+            controller = Controller(robot, Clock(), default_map={"id": "wrong", "name": "Wrong"})
+            server = ThreadingHTTPServer(("127.0.0.1", 0),
+                                        make_handler(controller, "test-token", source, "Ronaldo"))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                def get(route):
+                    with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}{route}",
+                                                timeout=2) as response:
+                        return response.read()
+                for ssid, name, map_id in (
+                    ("Origin PB4U9RK5", "Chud", "b3704c57-6e5b-49dc-b121-ab55ecae9857"),
+                    ("Origin PB4U9CR7", "Ronaldo", "da573728-35da-4fd2-9784-a211f9850d1b"),
+                    ("Origin PB4U9RK5", "Chud", "b3704c57-6e5b-49dc-b121-ab55ecae9857"),
+                    ("eduroam", "Unknown robot", None)):
+                    path.write_text(json.dumps({"updated": 100, "ssid": ssid, "state": "connected"}))
+                    self.assertEqual(json.loads(get("/api/connection"))["name"], name)
+                    state = json.loads(get("/api/state"))
+                    self.assertEqual((state["default_map"] or {}).get("id"), map_id)
+                    self.assertFalse(state["enabled"])
+                    self.assertIsNone(state["map_id"])
+                page = get("/")
+                self.assertNotIn(b"Load Ronaldo map", page)
+                self.assertNotIn(b"__ROBOT__", page)
+                self.assertEqual(robot.calls, [])
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join()
 
 
 class HttpTests(unittest.TestCase):
@@ -788,6 +844,7 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(json.loads(self.request("/api/places")[1]), [])
         self.assertEqual(self.request("/api/places/save", {"owner": "a", "name": "x",
                                                          "x": 1, "y": 1, "yaw": 0})[0], 403)
+        self.assertEqual(self.request("/api/places/rename", {"owner": "a", "name": "x", "new_name": "y"})[0], 403)
         self.assertEqual(self.robot.calls, [])
 
     def test_sim_map_load_requires_token(self):

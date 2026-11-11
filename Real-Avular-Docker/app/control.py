@@ -724,3 +724,11 @@ class Controller:
                 raise ValueError("Load an onboard map first")
             self.log(f'Deleted place "{name}".')
             return self.places.delete(self.map_id, str(name))
+
+    def rename_place(self, old, new):
+        with self.lock:
+            if self.places is None or not self.map_id:
+                raise ValueError("Load an onboard map first")
+            result = self.places.rename(self.map_id, str(old), new)
+            self.log(f'Renamed place "{old}" to "{str(new).strip()}".')
+            return result

@@ -39,7 +39,7 @@ The browser supports:
 - drag a destination/heading or enter coordinates and send a real navigation
   request;
 - stop, heartbeat loss handling, manual-command expiry and feedback checks.
-- configured robot identity, battery percent/voltage, ROS feedback freshness,
+- automatically detected robot identity, battery percent/voltage, ROS feedback freshness,
   and separate laptop and robot Wi-Fi readings.
 
 ### Driving to a place on Chud's map
@@ -49,7 +49,7 @@ Chud can only navigate on a map stored on Chud. The simulation map
 none of its 42 onboard maps has the same size or origin, so coordinates from the
 simulation do not carry over. Use Chud's own third-floor map instead:
 
-1. **Load Chud map** loads `ROBOT_MAP_ID` from `.env`
+1. **Load Chud map** loads the detected robot's map shortcut
    (`JMH-03-D07-10-26-PT-1`, 59.2 x 30.4 m). Other maps are under "Other maps".
 2. Localize: initial pose tool, drag, **Send initial pose**, wait until the pink
    laser dots match the walls, **Autopilot position** says accurate and
@@ -59,35 +59,75 @@ simulation do not carry over. Use Chud's own third-floor map instead:
    dashboard's USER mode (`Requested control mode with id 30 is not one of the
    accepted control modes for mode 10`). Release control on the remote first.
 4. **Enable real base**, click a saved place or drag a goal, tick the
-   destination box, **Drive to destination**. The "Ready to drive?" list shows
-   which condition is still missing.
+   destination box, **Drive to destination**. The **Pre-flight** box lists
+   only the conditions that are still missing, each with a button that jumps
+   to the step that fixes it.
+
+The left column is a four-step wizard (**Map → Localize → Enable → Drive**).
+Only one step is shown at a time; the bar at the top shows each step's state
+and can be clicked to jump to any step. When the shown step completes, the
+wizard moves on to the next one. Dragging on the map opens the matching step
+(initial pose → Localize, goal → Drive). The safety checks themselves are
+unchanged and enforced by the server, not by the wizard.
+
+**Display controls:** the dashboard uses the full window width. **Compact**
+reduces spacing; **Focus map** hides the side columns (click **Show panels**
+to restore them). Connection, feedback, manual drive and the activity log
+can each be collapsed by clicking their heading. These choices and the
+**Theme** selection are remembered in this browser. Themes include Midnight,
+Forest, Violet and Light. **Robot (automatic)** uses a red-to-green gradient
+for Ronaldo and a brown palette for Chud, using fresh Wi-Fi detection and a neutral accent if the
+robot cannot be detected. Colour is not proof of
+robot identity. STOP remains visible in every layout; hiding the manual
+controls ends any held manual command without enabling or starting motion.
 
 **Saved places** are stored per onboard map ID in `places/places.json`
-(mounted into the container, kept across rebuilds). Save the current goal, or
-the robot's position once localization is confirmed. Clicking a place only
-selects it; driving still needs the checkbox and the drive button.
+(mounted into the container, kept across rebuilds). In step 4 they are a
+searchable list with each place's coordinates, heading and distance from the
+robot; ✎ renames a place and × deletes it. With **Pick on map** active,
+clicking a purple marker on the map selects that place. Save the current blue
+goal, or the robot's position once localization is confirmed, under
+"Save a new place"; saving under an existing name updates that place.
+Selecting a place only selects it; driving still needs the checkbox and the
+drive button.
 
 ### Chud and Ronaldo
 
 **Chud** has an access-point SSID ending in **RK5** (`Origin PB4U9RK5`).
-**Ronaldo** has an SSID ending in **CR7**. This stack currently targets
-Ronaldo. Both hotspots give the robot 192.168.192.1, so connect only one
+**Ronaldo** has SSID `Origin PB4U9CR7`. Both hotspots give the robot
+192.168.192.1, so connect only one
 adapter to a robot at a time.
 
-To switch robot, connect the laptop to its hotspot, then set in `.env`:
+The running `Watch-Wifi.ps1` monitor automatically finds the adapter connected
+to either exact SSID, even with another adapter on eduroam. Within the next
+monitor/dashboard updates, the name, automatic theme and map shortcut follow
+that robot, without editing `.env`:
+
+Click **Detect robot** under **Robot & connection** to refresh immediately.
+The result names the robot, SSID and adapter, or explains missing/stale/ambiguous
+monitoring. It only reads the latest host snapshot, never changes Wi-Fi, loads a
+map, enables motion or sends a goal. Keep the Windows monitor running.
 
 | Robot | `ROBOT_NAME` | `ROBOT_WIFI_SUFFIX` | `ROBOT_MAP_ID` / `ROBOT_MAP_NAME` |
 |---|---|---|---|
 | Chud | Chud | RK5 | `b3704c57-6e5b-49dc-b121-ab55ecae9857` / JMH-03-D07-10-26-PT-1 |
 | Ronaldo | Ronaldo | CR7 | `da573728-35da-4fd2-9784-a211f9850d1b` / JMH - 3rd floor |
 
-and run `docker compose up -d --force-recreate` (the bridge must reconnect).
+Stop and disable motion **before** switching hotspots. After switching, reconnect
+the bridge with `docker compose restart zenoh-bridge` and reload the dashboard
+and onboard map before checking localization again. Detection alone does not
+reconnect a stopped bridge, clear a previously loaded map, or verify ROS feedback
+belongs to that robot. Never switch during driving.
 When the chosen map is already active onboard, **Load map** fetches it
 without reloading it, so a robot that is already localized keeps its pose:
 check the laser dots and confirm without sending an initial pose.
 
-`ROBOT_NAME` and `ROBOT_WIFI_SUFFIX` in `.env` label the configured target;
-they are not a verified identity handshake and do not change network routes.
+`ROBOT_NAME` remains configuration metadata. `ROBOT_MAP_ID` / `ROBOT_MAP_NAME`
+override the shortcut only when the detected robot matches `ROBOT_WIFI_SUFFIX`.
+Stale/missing monitoring, an unknown/disconnected SSID or two robot adapters
+produce **Unknown robot**, a neutral automatic theme and no map shortcut,
+not a fallback to the last configured robot. Other maps can still be selected.
+Wi-Fi detection is not a verified identity handshake and does not change routes.
 Verify the target IP, Wi-Fi and physical robot before enabling motion.
 
 Battery comes from `/robot/battery/info` (`origin_msgs/msg/BatteryInfo`).
@@ -99,17 +139,19 @@ For live **laptop** SSID and signal, leave this read-only Windows monitor runnin
 in another PowerShell window:
 
 ```powershell
-.\Watch-Wifi.ps1 -Adapter 'WiFi'     # the adapter connected to the robot
+.\Watch-Wifi.ps1                    # automatically find the robot adapter
+# Optional: restrict detection to a named adapter
+.\Watch-Wifi.ps1 -Adapter 'WiFi'
 ```
 
 It reads `netsh wlan show interfaces` every 3 seconds and writes only adapter,
-SSID, connection state, signal percent and timestamp to gitignored
+SSID, connection state, signal percent, ambiguity flag and timestamp to gitignored
 `status/wifi.json`, mounted read-only into Docker. It never requests keys.
 Ctrl+C stops the monitor; after 15 seconds the dashboard marks it unavailable.
 This parser expects the English Windows field names. Without the monitor,
-ROS battery/feedback and robot network telemetry still work. A mismatch
-(for example, Ronaldo's CR7 while configured for Chud) shows a warning, not
-an automatic target switch or a safety-rated identity interlock.
+ROS battery/feedback and robot network telemetry still work. Automatic identity
+and map-shortcut selection never load a map, enable motion or send a goal.
+This is not a safety-rated identity interlock.
 
 **Local PGM/YAML or Cerebra JSON file upload is not implemented.** If your map
 only exists in `../cerebra-data`, first import it into the robot's knowledge base
@@ -416,6 +458,15 @@ Host-only tests need Python 3 and the standard library, not ROS or Docker:
 py -m unittest discover -s tests -v
 docker compose config --quiet
 ```
+
+For the presentation checks, open the disabled dashboard in the browser
+session, then run (no robot commands are sent):
+
+```powershell
+Get-Content -Raw tests/display_browser.js | agent-browser --cdp "$env:AGENT_BROWSER_CDP" eval --stdin
+```
+
+This checks themes, panel controls and responsive layouts at 420–3840 px.
 
 Tests cover read-only startup, manual expiry and limits, heartbeat/feedback
 loss, ownership, rotated map coordinates, localization gates, goal submission

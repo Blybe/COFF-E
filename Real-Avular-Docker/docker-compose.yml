@@ -13,7 +13,9 @@ services:
     # bridge's 5 s default query timeout over Wi-Fi.
     command: ["client", "-e", "tcp/${REAL_ROBOT_IP:?Set REAL_ROBOT_IP in .env}:7447",
               "--queries-timeout-default", "30"]
-    restart: "no"
+    # Exits when the robot is unreachable at startup (e.g. while switching
+    # hotspots); retry instead of leaving the dashboard without ROS data.
+    restart: on-failure
 
   avular:
     build: .

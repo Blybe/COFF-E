@@ -49,3 +49,21 @@ class Store:
             data[str(map_id)] = [p for p in data.get(str(map_id), []) if p.get("name") != name]
             self._write(data)
             return data[str(map_id)]
+
+    def rename(self, map_id, old, new):
+        new = str(new).strip()
+        if not 1 <= len(new) <= 40:
+            raise ValueError("Place name must be 1-40 characters")
+        with self.lock:
+            data = self._read()
+            places = data.get(str(map_id), [])
+            if not any(p.get("name") == old for p in places):
+                raise ValueError(f'No saved place "{old}"')
+            if new != old and any(p.get("name") == new for p in places):
+                raise ValueError(f'A place called "{new}" already exists')
+            for p in places:
+                if p.get("name") == old:
+                    p["name"] = new
+            data[str(map_id)] = sorted(places, key=lambda p: p["name"].lower())
+            self._write(data)
+            return data[str(map_id)]
